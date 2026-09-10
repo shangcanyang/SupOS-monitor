@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SupOS-monitor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+  <div id="hdr">
+    <span class="logo">SupOS-monitor</span>
+    <span id="connDot" class="dot wait"></span>
+    <span id="connTxt" style="font-size:12px;color:#64748b;">初始化中…</span>
+    <span id="userTxt" style="font-size:12px;color:#94a3b8;margin-left:10px;"></span>
+    <span class="right">
+      <button id="btnPause">暂停监控</button>
+      <button id="btnRelogin">重新登录</button>
+    </span>
+  </div>
+
+  <div id="tabs">
+    <div class="tab active" data-t="live">实时点位</div>
+    <div class="tab" data-t="rule">规则配置</div>
+    <div class="tab" data-t="dev">装置分类</div>
+    <div class="tab" data-t="mail">邮件设置</div>
+    <div class="tab" data-t="set">设置 / 日志</div>
+  </div>
+
+  <div id="pages">
+    <div class="page active" id="page-live">
+      <div class="toolbar">
+        <button>刷新列表</button>
+        <button>全部展开/折叠</button>
+        <span id="liveCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
+      </div>
+      <div id="liveGrid" class="empty">实时点位页（下一步填内容）</div>
+    </div>
+
+    <div class="page" id="page-rule">
+      <div class="toolbar">
+        <button class="primary">＋ 添加点位</button>
+        <button>批量导入位号</button>
+        <button class="primary">保存规则</button>
+        <button>拉取描述/单位</button>
+      </div>
+      <div class="empty">规则配置页（下一步填内容）</div>
+    </div>
+
+    <div class="page" id="page-dev">
+      <div class="panel" style="max-width:760px;">
+        <h3>装置分类规则</h3>
+        <div style="color:#94a3b8;font-size:12px;line-height:1.7;">
+          装置分类页（下一步填内容）
+        </div>
+      </div>
+    </div>
+
+    <div class="page" id="page-mail">
+      <div class="panel" style="max-width:680px;">
+        <h3>QQ 邮箱 SMTP 告警推送</h3>
+        <div class="frm"><label>启用邮件</label>
+          <input type="checkbox" id="mailEnabled">
+          <span class="hint">与弹窗同规则，多点命中合并为一封；恢复不通知</span></div>
+        <div class="frm"><label>发件邮箱</label>
+          <input type="text" id="mailFrom" placeholder="xxx@qq.com"></div>
+        <div class="frm"><label>SMTP 授权码</label>
+          <input type="password" id="mailPass" placeholder="QQ 邮箱生成的授权码"></div>
+        <div class="frm"><label>收件人</label>
+          <input type="text" id="mailTo" placeholder="多个用英文逗号分隔"></div>
+        <div class="frm"><label></label>
+          <button class="primary">保存</button>
+          <button>发送测试邮件</button></div>
+      </div>
+    </div>
+
+    <div class="page" id="page-set">
+      <div class="panel" style="max-width:680px;">
+        <h3>连接设置</h3>
+        <div class="frm"><label>平台地址</label><input type="text" id="setServer"></div>
+        <div class="frm"><label>用户名</label><input type="text" id="setUser"></div>
+        <div class="frm"><label>密码</label><input type="password" id="setPass"></div>
+        <div class="frm"><label></label>
+          <button class="primary">保存并重连</button>
+          <button id="btnAuto">开机自启：关</button></div>
+      </div>
+      <div class="panel">
+        <h3>运行日志（保留 8 小时滚动）</h3>
+        <div class="toolbar">
+          <button>刷新</button>
+          <button>清空日志</button>
+        </div>
+        <div id="logView">日志区（下一步填内容）</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="statusbar">
+    <span id="sbLeft">就绪</span>
+    <span class="r" id="sbRight"></span>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

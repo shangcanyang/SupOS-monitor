@@ -38,11 +38,16 @@
       "target": [
         {
           "target": "zip",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",
       "artifactName": "${productName}-${version}-win-x64.zip"
     }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
   }
 }

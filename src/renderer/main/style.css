@@ -1,0 +1,58 @@
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;overflow:hidden;
+  font-family:"Microsoft YaHei UI","Microsoft YaHei",Segoe UI,Arial,sans-serif;
+  font-size:13px;color:#1f2937;background:#f5f7fa}
+button{font-family:inherit;font-size:12px;padding:4px 12px;
+  border:1px solid #cbd5e1;background:#fff;border-radius:4px;cursor:pointer;color:#334155}
+button:hover{background:#f1f5f9}
+button.primary{background:#2563eb;border-color:#2563eb;color:#fff}
+button.primary:hover{background:#1d4ed8}
+input,select{font-family:inherit;font-size:12px;padding:3px 6px;
+  border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#1f2937}
+input:focus,select:focus{outline:none;border-color:#2563eb}
+
+#app{position:absolute;top:0;left:0;right:0;bottom:0}
+#hdr{position:absolute;top:0;left:0;right:0;height:42px;background:#fff;
+  border-bottom:1px solid #e2e8f0;padding:0 12px;line-height:42px}
+#hdr .logo{font-weight:700;font-size:15px;color:#2563eb;margin-right:14px}
+#hdr .dot{display:inline-block;width:9px;height:9px;border-radius:50%;
+  background:#cbd5e1;margin-right:5px;vertical-align:middle}
+#hdr .dot.on{background:#16a34a}
+#hdr .dot.off{background:#dc2626}
+#hdr .dot.wait{background:#f59e0b}
+#hdr .right{float:right}
+#hdr .right button{margin-left:6px;margin-top:9px}
+
+#tabs{position:absolute;top:42px;left:0;right:0;height:34px;background:#fff;
+  border-bottom:1px solid #e2e8f0;padding:0 12px}
+#tabs .tab{display:inline-block;padding:0 16px;line-height:33px;cursor:pointer;
+  color:#64748b;border-bottom:2px solid transparent;font-size:13px}
+#tabs .tab:hover{color:#2563eb}
+#tabs .tab.active{color:#2563eb;border-bottom-color:#2563eb;font-weight:600}
+
+#pages{position:absolute;top:76px;left:0;right:0;bottom:26px;overflow:auto;background:#fff}
+.page{display:none;padding:12px 14px}
+.page.active{display:block}
+
+#statusbar{position:absolute;bottom:0;left:0;right:0;height:26px;
+  background:#f8fafc;border-top:1px solid #e2e8f0;line-height:26px;
+  padding:0 12px;font-size:12px;color:#64748b}
+#statusbar .r{float:right}
+
+.panel{background:#fff;border:1px solid #e2e8f0;border-radius:6px;
+  padding:14px 16px;margin-bottom:12px}
+.panel h3{margin:0 0 12px;font-size:13px;color:#0f172a;
+  border-left:3px solid #2563eb;padding-left:8px}
+.frm{margin-bottom:10px}
+.frm label{display:inline-block;width:110px;color:#475569;font-size:12px}
+.frm input[type=text],.frm input[type=password]{width:280px}
+.frm .hint{color:#94a3b8;font-size:11px;margin-left:8px}
+.toolbar{margin-bottom:10px}
+.toolbar button{margin-right:6px}
+
+.empty{text-align:center;color:#94a3b8;padding:24px 0;
+  border:1px dashed #e2e8f0;border-radius:6px;background:#fafbfc}
+
+#logView{height:340px;overflow:auto;background:#0f172a;color:#cbd5e1;
+  font-family:Consolas,Menlo,monospace;font-size:11px;padding:8px 10px;
+  border-radius:4px;white-space:pre-wrap;line-height:1.55}

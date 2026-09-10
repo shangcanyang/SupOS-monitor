@@ -1,6 +1,23 @@
-﻿node_modules/
+﻿# 依赖
+node_modules/
+
+# 打包产物
 release/
 dist/
+
+# 日志
 *.log
+
+# 配置（绝不提交）
 config.json
 tags.json
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
