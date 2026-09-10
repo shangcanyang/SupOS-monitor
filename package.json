@@ -1,21 +1,48 @@
 {
   "name": "supos-monitor",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "supOS 测点监控告警 · Windows 桌面常驻应用",
+  "main": "src/main/index.js",
+  "author": "shangcanyang",
+  "license": "MIT",
+  "private": true,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "electron .",
+    "start:debug": "electron . --enable-logging",
+    "verify": "node scripts/before-pack-check.js",
+    "pack": "npm run verify && electron-builder --win zip --x64",
+    "pack:dir": "npm run verify && electron-builder --win dir --x64"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/shangcanyang/SupOS-monitor.git"
+  "dependencies": {
+    "nodemailer": "^6.9.14",
+    "ws": "^8.18.0"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/shangcanyang/SupOS-monitor/issues"
+  "devDependencies": {
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3"
   },
-  "homepage": "https://github.com/shangcanyang/SupOS-monitor#readme"
+  "build": {
+    "appId": "com.shangcanyang.supos-monitor",
+    "productName": "SupOS-monitor",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/node_modules/*/{test,__tests__,docs,example}/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "${productName}-${version}-win-x64.zip"
+    }
+  }
 }
