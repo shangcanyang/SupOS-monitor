@@ -23,6 +23,7 @@
     <div class="tab active" data-t="live">实时点位</div>
     <div class="tab" data-t="rule">规则配置</div>
     <div class="tab" data-t="dev">装置分类</div>
+    <div class="tab" data-t="canvas">高级规则</div>
     <div class="tab" data-t="mail">邮件设置</div>
     <div class="tab" data-t="set">设置 / 日志</div>
   </div>
@@ -30,29 +31,91 @@
   <div id="pages">
     <div class="page active" id="page-live">
       <div class="toolbar">
-        <button>刷新列表</button>
-        <button>全部展开/折叠</button>
+        <button id="btnLiveRefresh">刷新列表</button>
         <span id="liveCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
       </div>
-      <div id="liveGrid" class="empty">实时点位页（下一步填内容）</div>
+      <table id="liveTable">
+        <thead>
+          <tr>
+            <th style="width:22%">位号</th>
+            <th style="width:16%">描述</th>
+            <th style="width:14%">当前值</th>
+            <th style="width:8%">单位</th>
+            <th style="width:8%">级别</th>
+            <th style="width:10%">装置</th>
+            <th style="width:14%">更新时间</th>
+          </tr>
+        </thead>
+        <tbody id="liveBody"></tbody>
+      </table>
     </div>
 
     <div class="page" id="page-rule">
       <div class="toolbar">
-        <button class="primary">＋ 添加点位</button>
-        <button>批量导入位号</button>
-        <button class="primary">保存规则</button>
-        <button>拉取描述/单位</button>
+        <button id="btnAddTag" class="primary">＋ 添加位号</button>
+        <button id="btnImportTags">粘贴导入</button>
+        <button id="btnImportExcel">Excel 导入</button>
+        <button id="btnReloadRules">刷新</button>
+        <button id="btnTestRule">规则测试</button>
+        <button id="btnSaveRules" class="primary">保存规则</button>
+        <button id="btnFetchMeta">拉取描述/单位</button>
+        <span id="ruleCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
       </div>
-      <div class="empty">规则配置页（下一步填内容）</div>
+      <table id="ruleTable">
+        <thead>
+          <tr>
+            <th style="width:16%">位号</th>
+            <th style="width:13%">描述</th>
+            <th style="width:8%">HH</th>
+            <th style="width:8%">H</th>
+            <th style="width:8%">L</th>
+            <th style="width:8%">LL</th>
+            <th style="width:7%">持续(s)</th>
+            <th style="width:7%">冷却(min)</th>
+            <th style="width:6%">启用</th>
+            <th style="width:6%">单位</th>
+            <th style="width:8%">装置</th>
+            <th style="width:5%"></th>
+          </tr>
+        </thead>
+        <tbody id="ruleBody"></tbody>
+      </table>
     </div>
 
     <div class="page" id="page-dev">
       <div class="panel" style="max-width:760px;">
         <h3>装置分类规则</h3>
-        <div style="color:#94a3b8;font-size:12px;line-height:1.7;">
-          装置分类页（下一步填内容）
+        <div style="color:#64748b;font-size:12px;line-height:1.7;">
+          按位号是否包含指定关键字自动归类。关键字不区分大小写；从上到下依次匹配，命中第一个即停下。
         </div>
+        <div class="toolbar" style="margin-top:10px">
+          <button id="btnDevAdd" class="primary">＋ 添加规则</button>
+          <button id="btnDevSave" class="primary">保存</button>
+          <span id="devStat" style="color:#94a3b8;font-size:12px;margin-left:8px"></span>
+        </div>
+        <div id="devList"></div>
+      </div>
+    </div>
+
+    <div class="page" id="page-canvas">
+      <div class="canvas-toolbar">
+        <select id="canvasRuleSelect"></select>
+        <button id="btnCanvasNew">＋ 新建规则</button>
+        <button id="btnCanvasDelete">删除当前</button>
+        <span class="sep"></span>
+        <button id="btnCanvasAddTag">＋ 位号</button>
+        <button id="btnCanvasAddCompare">＋ 比较</button>
+        <button id="btnCanvasAddRange">＋ 区间</button>
+        <button id="btnCanvasAddLogic">＋ 逻辑</button>
+        <button id="btnCanvasAddNot">＋ 非</button>
+        <button id="btnCanvasAddTrigger">＋ 触发</button>
+        <span style="flex:1"></span>
+        <button id="btnCanvasSave" class="primary">保存</button>
+      </div>
+      <div class="canvas-props" id="canvasProps"></div>
+      <div class="canvas-area" id="canvasArea">
+        <svg class="canvas-links" id="canvasLinks"></svg>
+        <div class="canvas-nodes" id="canvasNodes"></div>
       </div>
     </div>
 
@@ -69,8 +132,8 @@
         <div class="frm"><label>收件人</label>
           <input type="text" id="mailTo" placeholder="多个用英文逗号分隔"></div>
         <div class="frm"><label></label>
-          <button class="primary">保存</button>
-          <button>发送测试邮件</button></div>
+          <button id="btnMailSave" class="primary">保存</button>
+          <button id="btnMailTest">发送测试邮件</button></div>
       </div>
     </div>
 
@@ -81,16 +144,42 @@
         <div class="frm"><label>用户名</label><input type="text" id="setUser"></div>
         <div class="frm"><label>密码</label><input type="password" id="setPass"></div>
         <div class="frm"><label></label>
-          <button class="primary">保存并重连</button>
+          <button id="btnSaveAccount" class="primary">保存并重连</button>
           <button id="btnAuto">开机自启：关</button></div>
       </div>
+
+      <div class="panel" style="max-width:680px;">
+        <h3>配置迁移（不含密码）</h3>
+        <div style="color:#64748b;font-size:12px;line-height:1.7;margin-bottom:10px;">
+          导出包含：平台地址、用户名、邮件设置（不含授权码）、装置分类、画布规则、位号清单。<br>
+          <b>密码和 SMTP 授权码不会导出</b>，导入后需手动重新填写。
+        </div>
+        <div class="frm"><label></label>
+          <button id="btnExportCfg" class="primary">导出配置</button>
+          <button id="btnImportCfg">导入配置</button>
+          <span id="cfgIoStat" class="hint"></span>
+        </div>
+      </div>
+
+      <div class="panel" style="max-width:680px;">
+        <h3>软件更新</h3>
+        <div class="frm"><label>当前版本</label>
+          <span id="appVer" style="color:#475569;font-size:12px;font-family:Consolas,monospace;">—</span></div>
+        <div class="frm"><label></label>
+          <button id="btnCheckUpdate" class="primary">检查更新</button>
+          <span id="updateStat" class="hint"></span>
+        </div>
+        <div class="frm"><span class="hint" style="margin-left:0;color:#94a3b8;">
+          启动后 30 秒会自动后台检查一次；有新版本会弹框提示。</span></div>
+      </div>
+
       <div class="panel">
         <h3>运行日志（保留 8 小时滚动）</h3>
         <div class="toolbar">
-          <button>刷新</button>
-          <button>清空日志</button>
+          <button id="btnLogRefresh">刷新</button>
+          <button id="btnLogClear">清空日志</button>
         </div>
-        <div id="logView">日志区（下一步填内容）</div>
+        <div id="logView"></div>
       </div>
     </div>
   </div>
@@ -101,6 +190,71 @@
   </div>
 </div>
 
+<!-- 通用输入弹框 -->
+<div id="inputModal" class="modal-ov" style="display:none;">
+  <div class="modal-box">
+    <h3 id="inputModalTitle">输入</h3>
+    <div id="inputModalHint" class="mhint"></div>
+    <textarea id="inputModalText" rows="10"></textarea>
+    <div class="modal-foot">
+      <button id="inputModalCancel">取消</button>
+      <button id="inputModalOk" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 消息提示弹框 -->
+<div id="msgModal" class="modal-ov" style="display:none;">
+  <div class="modal-box" style="width:440px;">
+    <h3 id="msgModalTitle">提示</h3>
+    <div id="msgModalText" class="mhint" style="color:#1f2937;font-size:13px;white-space:pre-wrap;line-height:1.7;"></div>
+    <div class="modal-foot">
+      <button id="msgModalOk" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 确认弹框 -->
+<div id="confirmModal" class="modal-ov" style="display:none;">
+  <div class="modal-box" style="width:440px;">
+    <h3 id="confirmModalTitle">确认</h3>
+    <div id="confirmModalText" class="mhint" style="color:#1f2937;font-size:13px;white-space:pre-wrap;line-height:1.7;"></div>
+    <div class="modal-foot">
+      <button id="confirmModalCancel">取消</button>
+      <button id="confirmModalOk" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 规则测试弹框 -->
+<div id="testModal" class="modal-ov" style="display:none;">
+  <div class="modal-box" style="width:520px;">
+    <h3>规则测试</h3>
+    <div class="mhint">输入一个位号和一个模拟值，查看判断结果。</div>
+    <div class="adj-grid">
+      <div class="adj-row">
+        <label>位号</label>
+        <select id="testTag" style="flex:1;font-family:Consolas,monospace;
+          font-size:13px;padding:6px 10px;border:1px solid #cbd5e1;border-radius:4px"></select>
+      </div>
+      <div class="adj-row">
+        <label>模拟值</label>
+        <input type="text" id="testValue" placeholder="例如 105.5"
+          style="flex:1;font-family:Consolas,monospace;font-size:13px;
+          padding:6px 10px;border:1px solid #cbd5e1;border-radius:4px">
+      </div>
+    </div>
+    <div id="testResult" style="margin-top:12px;padding:12px;background:#f8fafc;
+      border-radius:6px;font-size:12px;line-height:1.7;min-height:60px;
+      border:1px solid #e2e8f0;display:none"></div>
+    <div class="modal-foot">
+      <button id="testCancel">关闭</button>
+      <button id="testRun" class="primary">测试</button>
+    </div>
+  </div>
+</div>
+
+<script src="canvas.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

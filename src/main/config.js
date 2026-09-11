@@ -2,46 +2,66 @@ const { app, safeStorage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-const DIR = app.getPath('userData');            // %APPDATA%\SupOS-monitor
+const DIR = app.getPath('userData');
 const CFG_FILE = path.join(DIR, 'config.json');
 
-function encrypt(text) {
-  if (!text) return '';
-  if (!safeStorage.isEncryptionAvailable()) return '';   // DPAPI 不可用时置空
-  return safeStorage.encryptString(text).toString('base64');
+function enc(t){
+  if (!t) return '';
+  if (!safeStorage.isEncryptionAvailable()) return '';
+  return safeStorage.encryptString(String(t)).toString('base64');
+}
+function dec(b){
+  if (!b) return '';
+  try { return safeStorage.decryptString(Buffer.from(b, 'base64')); } catch (e) { return ''; }
 }
 
-function decrypt(b64) {
-  if (!b64) return '';
-  try {
-    return safeStorage.decryptString(Buffer.from(b64, 'base64'));
-  } catch (e) {
-    return '';   // 换用户/换机器后解不开，返回空
-  }
-}
+const DEF = {
+  server: 'http://119.36.147.45:8041',
+  username: '',
+  password: '',
+  autoStart: false,
+  mail: { enabled: false, from: '', pass: '', to: '' },
+  devices: [],
+  canvasRules: []
+};
 
-// 返回给渲染进程的配置（密码字段解密后返回，方便回填）
-function load() {
-  const def = { server: 'http://119.36.147.45:8041', username: '', password: '' };
-  if (!fs.existsSync(CFG_FILE)) return def;
+function load(){
+  if (!fs.existsSync(CFG_FILE)) return JSON.parse(JSON.stringify(DEF));
   try {
     const raw = JSON.parse(fs.readFileSync(CFG_FILE, 'utf8'));
     return {
-      server:   raw.server   || def.server,
+      server: raw.server || DEF.server,
       username: raw.username || '',
-      password: decrypt(raw.password)
+      password: dec(raw.password),
+      autoStart: !!raw.autoStart,
+      mail: {
+        enabled: !!(raw.mail && raw.mail.enabled),
+        from: (raw.mail && raw.mail.from) || '',
+        pass: (raw.mail && dec(raw.mail.pass)) || '',
+        to: (raw.mail && raw.mail.to) || ''
+      },
+      devices: Array.isArray(raw.devices) ? raw.devices : [],
+      canvasRules: Array.isArray(raw.canvasRules) ? raw.canvasRules : []
     };
   } catch (e) {
-    return def;
+    return JSON.parse(JSON.stringify(DEF));
   }
 }
 
-// 保存：密码加密后落盘
-function save(cfg) {
+function save(cfg){
   const out = {
-    server:   String(cfg.server || '').trim(),
+    server: String(cfg.server || '').trim(),
     username: String(cfg.username || '').trim(),
-    password: encrypt(cfg.password || ''),
+    password: enc(cfg.password || ''),
+    autoStart: !!cfg.autoStart,
+    mail: {
+      enabled: !!(cfg.mail && cfg.mail.enabled),
+      from: (cfg.mail && cfg.mail.from) || '',
+      pass: enc(cfg.mail && cfg.mail.pass),
+      to: (cfg.mail && cfg.mail.to) || ''
+    },
+    devices: Array.isArray(cfg.devices) ? cfg.devices : [],
+    canvasRules: Array.isArray(cfg.canvasRules) ? cfg.canvasRules : [],
     _ver: '1.0.0',
     _ts: new Date().toISOString()
   };
@@ -49,6 +69,6 @@ function save(cfg) {
   return true;
 }
 
-function getDir() { return DIR; }
+function getDir(){ return DIR; }
 
 module.exports = { load, save, getDir };

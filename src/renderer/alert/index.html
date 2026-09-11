@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>报警</title>
+<link rel="stylesheet" href="alert.css">
+</head>
+<body>
+
+<div id="titlebar">
+  <span class="ico">⚠</span>
+  <span class="tt">测点报警</span>
+  <span id="count" class="cnt"></span>
+  <span class="spacer"></span>
+  <span class="close" id="btnClose" title="关闭">×</span>
+</div>
+
+<div id="body">
+  <div id="list"></div>
+</div>
+
+<div id="foot">
+  <span class="hint">关闭本窗口不影响监控，超限仍在后台运行</span>
+  <button id="btnOk" class="primary">知道了</button>
+</div>
+
+<div id="adjModal" class="modal-ov" style="display:none;">
+  <div class="modal-box">
+    <h3 id="adjTitle">临时调整设定值</h3>
+    <div id="adjHint" class="mhint"></div>
+    <div class="adj-grid">
+      <div class="adj-row">
+        <label>HH 上限</label>
+        <input type="text" id="adjHH" placeholder="留空不判断">
+      </div>
+      <div class="adj-row">
+        <label>H 上限</label>
+        <input type="text" id="adjH" placeholder="留空不判断">
+      </div>
+      <div class="adj-row">
+        <label>L 下限</label>
+        <input type="text" id="adjL" placeholder="留空不判断">
+      </div>
+      <div class="adj-row">
+        <label>LL 下限</label>
+        <input type="text" id="adjLL" placeholder="留空不判断">
+      </div>
+    </div>
+    <div class="mhint" style="margin-top:12px">
+      修改后立即按新值判断；<b>2 小时</b>后或数值回落 <b>30 秒</b>后自动还原。
+    </div>
+    <div class="modal-foot">
+      <button id="adjCancel">取消</button>
+      <button id="adjOk" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<script src="alert.js"></script>
+</body>
+</html>

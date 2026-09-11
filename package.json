@@ -9,13 +9,15 @@
   "scripts": {
     "start": "electron .",
     "start:debug": "electron . --enable-logging",
-    "verify": "node scripts/before-pack-check.js",
-    "pack": "npm run verify && electron-builder --win zip --x64",
-    "pack:dir": "npm run verify && electron-builder --win dir --x64"
+    "pack": "electron-builder --win zip --x64",
+    "pack:dir": "electron-builder --win dir --x64",
+    "publish": "electron-builder --win zip --x64 --publish always"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "nodemailer": "^6.9.14",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "electron": "^31.3.0",
@@ -30,9 +32,7 @@
     },
     "files": [
       "src/**/*",
-      "package.json",
-      "!**/*.map",
-      "!**/node_modules/*/{test,__tests__,docs,example}/**"
+      "package.json"
     ],
     "win": {
       "target": [
@@ -45,9 +45,14 @@
       ],
       "icon": "build/icon.ico",
       "artifactName": "${productName}-${version}-win-x64.zip"
-    }
-  },
-  "allowScripts": {
-    "electron@31.7.7": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "shangcanyang",
+        "repo": "SupOS-monitor",
+        "releaseType": "release"
+      }
+    ]
   }
 }
