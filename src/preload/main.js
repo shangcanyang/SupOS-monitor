@@ -15,11 +15,26 @@ contextBridge.exposeInMainWorld('api', {
   importExcel:()    => ipcRenderer.invoke('tags:importExcel'),
   fetchMeta:  ()    => ipcRenderer.invoke('meta:fetch'),
   testRule:   (o)   => ipcRenderer.invoke('rule:test', o),
+  saveLiveOrder: (order) => ipcRenderer.invoke('tags:saveLiveOrder', order),
+
+  // 环境变量
+  loadVars:    ()        => ipcRenderer.invoke('vars:load'),
+  saveVars:    (list)    => ipcRenderer.invoke('vars:saveAll', list),
+  addVar:      (o)       => ipcRenderer.invoke('vars:add', o),
+  removeVar:   (id)      => ipcRenderer.invoke('vars:remove', id),
+  varsRuntime: ()        => ipcRenderer.invoke('vars:runtime'),
 
   saveMail:   (m)   => ipcRenderer.invoke('mail:save', m),
   testMail:   ()    => ipcRenderer.invoke('mail:test'),
+  muteStatus: ()    => ipcRenderer.invoke('mail:muteStatus'),
+  unmuteMail: ()    => ipcRenderer.invoke('mail:unmute'),
+  checkMailNow: ()  => ipcRenderer.invoke('mail:checkNow'),
 
   saveDevices:(d)   => ipcRenderer.invoke('devices:save', d),
+
+  pauseDevice:   (device, minutes) => ipcRenderer.invoke('device:pause', { device, minutes }),
+  resumeDevice:  (device)          => ipcRenderer.invoke('device:resume', device),
+  pauseList:     ()                => ipcRenderer.invoke('device:pauseList'),
 
   setAutoStart:(on) => ipcRenderer.invoke('autostart:set', on),
   getAutoStart:()   => ipcRenderer.invoke('autostart:get'),
@@ -35,7 +50,6 @@ contextBridge.exposeInMainWorld('api', {
   canvasLoad: ()    => ipcRenderer.invoke('canvas:load'),
   canvasSave: (r)   => ipcRenderer.invoke('canvas:save', r),
 
-  // ---- 三期 ----
   exportConfig: ()  => ipcRenderer.invoke('config:export'),
   importConfig: ()  => ipcRenderer.invoke('config:import'),
   checkUpdate:  ()  => ipcRenderer.invoke('update:check'),

@@ -16,7 +16,11 @@
 </div>
 
 <div id="body">
-  <div id="list"></div>
+  <div id="list">
+    <div style="text-align:center;color:#94a3b8;padding:60px 20px;font-size:13px">
+      正在加载报警数据…
+    </div>
+  </div>
 </div>
 
 <div id="foot">
@@ -56,6 +60,190 @@
   </div>
 </div>
 
-<script src="alert.js"></script>
+<script>
+// ============================================================
+// 拿 ipcRenderer（nodeIntegration 开启，不走 preload）
+// ============================================================
+var ipcRenderer = null;
+try {
+  ipcRenderer = require('electron').ipcRenderer;
+} catch (err) {
+  console.error('require electron failed:', err);
+}
+
+// ============================================================
+// 工具
+// ============================================================
+function esc(s){
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtVal(v){
+  if (v === null || v === undefined || v === '') return '-';
+  var n = Number(v);
+  return isNaN(n) ? String(v) : n.toFixed(3);
+}
+function fmtTh(v){ return (v == null) ? '-' : fmtVal(v); }
+
+var currentItems = [];
+
+// ============================================================
+// 关闭
+// ============================================================
+function doClose(){
+  try {
+    if (ipcRenderer) ipcRenderer.invoke('alert:close');
+    else window.close();
+  } catch (e) {
+    try { window.close(); } catch (e2) {}
+  }
+}
+document.getElementById('btnClose').addEventListener('click', doClose);
+document.getElementById('btnOk').addEventListener('click', doClose);
+document.addEventListener('keydown', function(e){
+  var adjOpen = document.getElementById('adjModal').style.display === 'flex';
+  if (adjOpen) return;
+  if (e.key === 'Escape') doClose();
+});
+
+// ============================================================
+// 渲染
+// ============================================================
+function render(items){
+  currentItems = items || [];
+  document.getElementById('count').textContent = currentItems.length + ' 项';
+  var box = document.getElementById('list');
+
+  if (!currentItems.length){
+    box.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:60px 20px;font-size:13px">' +
+                    '暂无报警，一切正常 ✓</div>';
+    return;
+  }
+
+  box.innerHTML = currentItems.map(function(it, i){
+    var t = it.thresholds || {};
+    return '<div class="item ' + esc(it.level) + '">' +
+      '<div class="hd">' +
+        '<span class="lv ' + esc(it.level) + '">' + esc(it.level) + '</span>' +
+        '<span class="tag">' + esc(it.tag) + '</span>' +
+        '<span class="dev">' + esc(it.device || '未分类') + '</span>' +
+      '</div>' +
+      (it.desc ? '<div class="desc">' + esc(it.desc) + '</div>' : '') +
+      '<div class="valbox">' +
+        '<span class="val-k">当前值</span>' +
+        '<span class="val-v">' + fmtVal(it.value) + '</span>' +
+        (it.unit ? '<span class="val-u">' + esc(it.unit) + '</span>' : '') +
+        (it.isTemp ? '<span class="temp">临时设定值生效中</span>' : '') +
+      '</div>' +
+      '<div class="ths">' +
+        '<b>HH</b>=' + fmtTh(t.hh) + '　' +
+        '<b>H</b>='  + fmtTh(t.h)  + '　' +
+        '<b>L</b>='  + fmtTh(t.l)  + '　' +
+        '<b>LL</b>=' + fmtTh(t.ll) +
+      '</div>' +
+      '<div class="acts">' +
+        '<button data-adj="' + i + '">⚙ 临时调整设定值</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  var btns = box.querySelectorAll('[data-adj]');
+  for (var k = 0; k < btns.length; k++){
+    btns[k].addEventListener('click', (function(idx){
+      return function(){ openAdjust(idx); };
+    })(Number(btns[k].getAttribute('data-adj'))));
+  }
+}
+
+// ============================================================
+// 临时调整设定值
+// ============================================================
+function openAdjust(i){
+  var it = currentItems[i];
+  if (!it) return;
+  var t = it.thresholds || {};
+
+  var ov = document.getElementById('adjModal');
+  document.getElementById('adjTitle').textContent = '临时调整设定值 · ' + it.tag;
+  document.getElementById('adjHint').innerHTML =
+    (it.desc ? esc(it.desc) + '<br>' : '') +
+    '当前值：<b>' + fmtVal(it.value) + (it.unit ? ' ' + esc(it.unit) : '') + '</b>' +
+    '　级别：<b>' + esc(it.level) + '</b>';
+
+  document.getElementById('adjHH').value = (t.hh == null) ? '' : t.hh;
+  document.getElementById('adjH').value  = (t.h  == null) ? '' : t.h;
+  document.getElementById('adjL').value  = (t.l  == null) ? '' : t.l;
+  document.getElementById('adjLL').value = (t.ll == null) ? '' : t.ll;
+
+  ov.style.display = 'flex';
+  setTimeout(function(){ document.getElementById('adjHH').focus(); }, 30);
+
+  var ok = document.getElementById('adjOk');
+  var cancel = document.getElementById('adjCancel');
+
+  function cleanup(){
+    ov.style.display = 'none';
+    ok.removeEventListener('click', onOk);
+    cancel.removeEventListener('click', onCancel);
+    document.removeEventListener('keydown', onKey);
+  }
+  function onOk(){
+    var v = {
+      hh: document.getElementById('adjHH').value.trim(),
+      h:  document.getElementById('adjH').value.trim(),
+      l:  document.getElementById('adjL').value.trim(),
+      ll: document.getElementById('adjLL').value.trim()
+    };
+    cleanup();
+    if (ipcRenderer){
+      ipcRenderer.invoke('alert:setOverride', it.tag, v).then(function(){
+        ipcRenderer.invoke('alert:detail').then(render);
+      });
+    }
+  }
+  function onCancel(){ cleanup(); }
+  function onKey(e){
+    if (e.key === 'Escape') onCancel();
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) onOk();
+  }
+
+  ok.addEventListener('click', onOk);
+  cancel.addEventListener('click', onCancel);
+  document.addEventListener('keydown', onKey);
+}
+
+// ============================================================
+// 初始化
+// ============================================================
+function init(){
+  if (!ipcRenderer){
+    document.getElementById('list').innerHTML =
+      '<div style="color:#dc2626;padding:24px;font-family:Consolas,monospace;font-size:12px;' +
+      'white-space:pre-wrap;line-height:1.7">' +
+      '<b>ipcRenderer 未加载</b>\n\n' +
+      '可能原因：nodeIntegration 未开启，或 require 失败。\n' +
+      '请检查 src/main/alert-window.js 里 webPreferences 配置。' +
+      '</div>';
+    return;
+  }
+
+  // 主进程推送
+  ipcRenderer.on('alert:render', function(_e, items){ render(items); });
+
+  // 主动拉一次（防止推送时机错过）
+  ipcRenderer.invoke('alert:detail').then(render).catch(function(err){
+    document.getElementById('list').innerHTML =
+      '<div style="color:#dc2626;padding:24px;font-family:Consolas,monospace;font-size:12px;' +
+      'white-space:pre-wrap">拉取报警数据失败：' + esc(String(err)) + '</div>';
+  });
+}
+
+if (document.readyState === 'loading'){
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+</script>
 </body>
 </html>

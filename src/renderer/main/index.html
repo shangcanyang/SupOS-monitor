@@ -24,6 +24,7 @@
     <div class="tab" data-t="rule">规则配置</div>
     <div class="tab" data-t="dev">装置分类</div>
     <div class="tab" data-t="canvas">高级规则</div>
+    <div class="tab" data-t="vars">环境变量</div>
     <div class="tab" data-t="mail">邮件设置</div>
     <div class="tab" data-t="set">设置 / 日志</div>
   </div>
@@ -32,22 +33,14 @@
     <div class="page active" id="page-live">
       <div class="toolbar">
         <button id="btnLiveRefresh">刷新列表</button>
+        <button id="btnLiveExpandAll">全部展开</button>
+        <button id="btnLiveCollapseAll">全部折叠</button>
         <span id="liveCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
+        <span style="color:#94a3b8;font-size:11px;margin-left:12px;">
+          提示：拖动卡片可在同装置内排序，顺序自动保存
+        </span>
       </div>
-      <table id="liveTable">
-        <thead>
-          <tr>
-            <th style="width:22%">位号</th>
-            <th style="width:16%">描述</th>
-            <th style="width:14%">当前值</th>
-            <th style="width:8%">单位</th>
-            <th style="width:8%">级别</th>
-            <th style="width:10%">装置</th>
-            <th style="width:14%">更新时间</th>
-          </tr>
-        </thead>
-        <tbody id="liveBody"></tbody>
-      </table>
+      <div id="liveGroups"></div>
     </div>
 
     <div class="page" id="page-rule">
@@ -103,24 +96,93 @@
         <button id="btnCanvasNew">＋ 新建规则</button>
         <button id="btnCanvasDelete">删除当前</button>
         <span class="sep"></span>
-        <button id="btnCanvasAddTag">＋ 位号</button>
-        <button id="btnCanvasAddCompare">＋ 比较</button>
-        <button id="btnCanvasAddRange">＋ 区间</button>
-        <button id="btnCanvasAddLogic">＋ 逻辑</button>
-        <button id="btnCanvasAddNot">＋ 非</button>
-        <button id="btnCanvasAddTrigger">＋ 触发</button>
+        <span style="color:#94a3b8;font-size:12px;">
+          提示：从左侧点击或拖拽节点到画布；从节点右侧圆点按住拖到目标节点左侧圆点即可连线
+        </span>
         <span style="flex:1"></span>
         <button id="btnCanvasSave" class="primary">保存</button>
       </div>
       <div class="canvas-props" id="canvasProps"></div>
-      <div class="canvas-area" id="canvasArea">
-        <svg class="canvas-links" id="canvasLinks"></svg>
-        <div class="canvas-nodes" id="canvasNodes"></div>
+      <div class="canvas-wrap">
+        <div class="canvas-side" id="canvasSide">
+          <div class="side-group">
+            <div class="side-group-title">数据源</div>
+            <div class="side-item" data-type="tag"><span class="ico">📈</span>位号取值</div>
+            <div class="side-item" data-type="bool"><span class="ico">🔘</span>布尔位号</div>
+            <div class="side-item" data-type="tagStatus"><span class="ico">✔</span>位号质量</div>
+          </div>
+          <div class="side-group">
+            <div class="side-group-title">判断</div>
+            <div class="side-item" data-type="compare"><span class="ico">⇄</span>比较</div>
+            <div class="side-item" data-type="range"><span class="ico">↔</span>区间</div>
+            <div class="side-item" data-type="deviation"><span class="ico">≶</span>偏差</div>
+            <div class="side-item" data-type="rate"><span class="ico">↗</span>变化率</div>
+          </div>
+          <div class="side-group">
+            <div class="side-group-title">逻辑</div>
+            <div class="side-item" data-type="logic"><span class="ico">⋀</span>逻辑与/或</div>
+            <div class="side-item" data-type="not"><span class="ico">!</span>非</div>
+            <div class="side-item" data-type="xor"><span class="ico">⊕</span>异或</div>
+          </div>
+          <div class="side-group">
+            <div class="side-group-title">流程控制</div>
+            <div class="side-item" data-type="if"><span class="ico">◈</span>条件分支（if/else）</div>
+            <div class="side-item" data-type="merge"><span class="ico">⧉</span>合并分支</div>
+          </div>
+          <div class="side-group">
+            <div class="side-group-title">时间</div>
+            <div class="side-item" data-type="duration"><span class="ico">⏱</span>持续时间</div>
+            <div class="side-item" data-type="delay"><span class="ico">⏳</span>延时</div>
+            <div class="side-item" data-type="timeRange"><span class="ico">🕐</span>时间段</div>
+          </div>
+          <div class="side-group">
+            <div class="side-group-title">变量</div>
+            <div class="side-item" data-type="varGet"><span class="ico">R</span>读取变量</div>
+            <div class="side-item" data-type="varSet"><span class="ico">W</span>写入变量</div>
+          </div>
+          <div class="side-group">
+            <div class="side-group-title">触发</div>
+            <div class="side-item" data-type="trigger"><span class="ico">🔔</span>触发报警</div>
+          </div>
+        </div>
+        <div class="canvas-area" id="canvasArea">
+          <svg class="canvas-links" id="canvasLinks"></svg>
+          <div class="canvas-nodes" id="canvasNodes"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page" id="page-vars">
+      <div class="panel" style="max-width:900px;">
+        <h3>环境变量列表</h3>
+        <div style="color:#64748b;font-size:12px;line-height:1.7;margin-bottom:10px;">
+          变量可被「高级规则」页的「读取变量 / 写入变量」节点读写。<br>
+          变量名必须为字母/数字/下划线，且不能以数字开头；变量类型分「数值」和「文本」。
+        </div>
+        <div class="toolbar">
+          <button id="btnVarAdd" class="primary">＋ 添加变量</button>
+          <button id="btnVarReload">刷新</button>
+          <button id="btnVarSave" class="primary">保存</button>
+          <span id="varStat" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
+        </div>
+        <table id="varTable">
+          <thead>
+            <tr>
+              <th style="width:20%">变量名</th>
+              <th style="width:12%">类型</th>
+              <th style="width:20%">初始值</th>
+              <th style="width:26%">描述</th>
+              <th style="width:16%">当前值</th>
+              <th style="width:6%"></th>
+            </tr>
+          </thead>
+          <tbody id="varBody"></tbody>
+        </table>
       </div>
     </div>
 
     <div class="page" id="page-mail">
-      <div class="panel" style="max-width:680px;">
+      <div class="panel" style="max-width:720px;">
         <h3>QQ 邮箱 SMTP 告警推送</h3>
         <div class="frm"><label>启用邮件</label>
           <input type="checkbox" id="mailEnabled">
@@ -134,6 +196,25 @@
         <div class="frm"><label></label>
           <button id="btnMailSave" class="primary">保存</button>
           <button id="btnMailTest">发送测试邮件</button></div>
+      </div>
+
+      <div class="panel" style="max-width:720px;">
+        <h3>邮件指令（回复邮件控制报警）</h3>
+        <div style="color:#64748b;font-size:12px;line-height:1.7;margin-bottom:10px;">
+          开启后，程序会用 IMAP 每 60 秒检查一次收件箱。<br>
+          回复标题含 <b>SupOS-monitor</b> 的邮件，正文包含下列关键字即触发指令：<br>
+          · 关闭 / 停用 / 停止 / 静音 / 暂停 / stop / mute / disable → <b style="color:#dc2626">停发报警邮件</b><br>
+          · 开启 / 启动 / 启用 / 恢复 / start / unmute / enable → <b style="color:#16a34a">恢复发邮件</b>
+        </div>
+        <div class="frm"><label>启用邮件指令</label>
+          <input type="checkbox" id="mailImapEnabled">
+          <span class="hint">需要与 SMTP 相同的 QQ 邮箱授权码</span></div>
+        <div class="frm"><label>当前状态</label>
+          <span id="mailMuteStatus" style="font-size:12px;color:#475569;">—</span></div>
+        <div class="frm"><label></label>
+          <button id="btnMailUnmute" class="primary">立即恢复邮件报警</button>
+          <button id="btnMailCheckNow">立即检查一次</button>
+          <span id="mailCmdStat" class="hint"></span></div>
       </div>
     </div>
 

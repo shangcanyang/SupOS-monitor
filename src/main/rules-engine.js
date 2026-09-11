@@ -1,15 +1,19 @@
 const logger = require('./logger');
 const canvasEngine = require('./canvas-engine');
+const varsMod = require('./vars');
 
 class RulesEngine {
-  constructor({ getPoints, getDevices, getCanvasRules, onAlarm }){
+  constructor({ getPoints, getDevices, getCanvasRules, getDevicePause, onAlarm }){
     this.getPoints = getPoints;
     this.getDevices = getDevices;
     this.getCanvasRules = getCanvasRules;
+    this.getDevicePause = getDevicePause;
     this.onAlarm = onAlarm;
     this.rt = {};
     this.pausedUntil = 0;
     this.timer = null;
+    this.canvasVars = {};
+    this.canvasNodeState = {};
   }
 
   getRT(tag){
@@ -55,6 +59,15 @@ class RulesEngine {
     return '未分类';
   }
 
+  isDevicePaused(dev, now){
+    if (!this.getDevicePause) return false;
+    const map = this.getDevicePause();
+    if (!map || map[dev] === undefined) return false;
+    const until = map[dev];
+    if (until === 0) return true;
+    return now < until;
+  }
+
   effectiveThresholds(p){
     const rt = this.getRT(p.tag);
     const o = rt.override;
@@ -83,8 +96,7 @@ class RulesEngine {
       hh: n(hh), h: n(h), l: n(l), ll: n(ll),
       expire: Date.now() + (hours || 2) * 3600000
     };
-    logger.log('设置临时设定值：' + tag + ' HH=' + rt.override.hh + ' H=' + rt.override.h +
-               ' L=' + rt.override.l + ' LL=' + rt.override.ll);
+    logger.log('设置临时设定值：' + tag);
   }
 
   start(){
@@ -97,7 +109,7 @@ class RulesEngine {
 
   pause(minutes){
     this.pausedUntil = minutes ? Date.now() + minutes * 60000 : Infinity;
-    logger.log('监控已暂停' + (minutes ? ' ' + minutes + ' 分钟' : '（手动恢复）'));
+    logger.log('监控已暂停');
   }
   resume(){
     this.pausedUntil = 0;
@@ -114,17 +126,26 @@ class RulesEngine {
       const p = points[i];
       if (!p || !p.tag) continue;
       if (p.enabled === false) continue;
+
+      const dev = this.getDeviceOf(p.tag);
+      if (this.isDevicePaused(dev, now)){
+        const rt = this.getRT(p.tag);
+        rt.pendingLevel = null;
+        rt.pendingSince = 0;
+        continue;
+      }
+
       const rt = this.getRT(p.tag);
       if (rt.value === null || rt.value === undefined) continue;
 
       if (rt.status !== null && String(rt.status) !== '0'){
         if (!rt.abnormal){
           rt.abnormal = true;
-          logger.log('数据质量异常：' + p.tag + ' status=' + rt.status + '，暂不判断', 'WARN');
+          logger.log('数据质量异常：' + p.tag, 'WARN');
         }
         continue;
       }
-      if (rt.abnormal){ rt.abnormal = false; logger.log('数据质量恢复：' + p.tag); }
+      if (rt.abnormal){ rt.abnormal = false; }
 
       const lvl = this.levelOf(p, rt.value);
       const durMs = (p.duration || 0) * 1000;
@@ -143,7 +164,6 @@ class RulesEngine {
           else if (now - rt.normalSince > 30000){
             rt.override = null;
             rt.normalSince = 0;
-            logger.log('数值回落，临时设定值已还原：' + p.tag);
           }
         }
         continue;
@@ -171,19 +191,46 @@ class RulesEngine {
   }
 
   tickCanvasRules(now){
+    // 每 tick 加载变量定义，把缺省值填入运行时
+    try {
+      const defs = varsMod.load().vars || [];
+      const seen = {};
+      for (const v of defs){
+        seen[v.name] = true;
+        if (this.canvasVars[v.name] === undefined){
+          this.canvasVars[v.name] = v.init;
+        }
+      }
+      // 已删除的变量从运行时清理
+      for (const k in this.canvasVars){
+        if (!seen[k]) delete this.canvasVars[k];
+      }
+    } catch (e) {}
+
     const rules = this.getCanvasRules ? this.getCanvasRules() : [];
     if (!rules || !rules.length) return;
+
+    const runtime = {};
+    for (const tag in this.rt){
+      runtime[tag] = { value: this.rt[tag].value, status: this.rt[tag].status };
+    }
+    const state = {
+      runtime,
+      vars: this.canvasVars,
+      nodeState: this.canvasNodeState,
+      now
+    };
 
     for (const rule of rules){
       if (!rule.enabled) continue;
       const rid = '_cr_' + rule.id;
       if (!this.rt[rid]){
-        this.rt[rid] = { active: false, since: 0, cooldownUntil: 0, inAlarm: false, lastLevel: '' };
+        this.rt[rid] = { active: false, since: 0, cooldownUntil: 0, inAlarm: false };
       }
       const cr = this.rt[rid];
 
       let res;
-      try { res = canvasEngine.evalRule(rule, this.rt); }
+      try { res = canvasEngine.evalRule(rule, state); }
       catch (e) { res = { active: false }; }
 
       if (!res.active){
@@ -196,7 +243,6 @@ class RulesEngine {
       }
 
       if (!cr.since) cr.since = now;
-
       const durMs = (rule.duration || 0) * 1000;
       if (now - cr.since < durMs) continue;
 
@@ -223,17 +269,20 @@ class RulesEngine {
   collectActive(){
     const out = [];
     const points = this.getPoints();
+    const now = Date.now();
     for (let i = 0; i < points.length; i++){
       const p = points[i];
       const rt = this.rt[p.tag];
       if (!rt || !rt.inAlarm) continue;
+      const dev = this.getDeviceOf(p.tag);
+      if (this.isDevicePaused(dev, now)) continue;
       const t = this.effectiveThresholds(p);
       out.push({
         tag: p.tag, desc: p.desc || '', unit: p.unit || '',
         value: rt.value, level: rt.level, time: rt.lastUpdate,
         thresholds: { hh: t.hh, h: t.h, l: t.l, ll: t.ll },
         isTemp: t.temp,
-        device: this.getDeviceOf(p.tag)
+        device: dev
       });
     }
     const rules = this.getCanvasRules ? this.getCanvasRules() : [];
@@ -260,29 +309,27 @@ class RulesEngine {
   snapshot(){
     const out = {};
     const points = this.getPoints();
+    const now = Date.now();
     for (let i = 0; i < points.length; i++){
       const p = points[i];
       const rt = this.rt[p.tag];
-      if (!rt) {
+      if (!rt){
         out[p.tag] = { value: null, status: null, lastUpdate: 0, inAlarm: false, level: null,
-                       thresholds: { hh: p.hh, h: p.h, l: p.l, ll: p.ll }, isTemp: false };
+                       thresholds: { hh: p.hh, h: p.h, l: p.l, ll: p.ll }, isTemp: false,
+                       devicePaused: false };
         continue;
       }
       const t = this.effectiveThresholds(p);
+      const dev = this.getDeviceOf(p.tag);
       out[p.tag] = {
         value: rt.value, status: rt.status, lastUpdate: rt.lastUpdate,
         inAlarm: rt.inAlarm, level: rt.level,
         thresholds: { hh: t.hh, h: t.h, l: t.l, ll: t.ll },
-        isTemp: t.temp
+        isTemp: t.temp,
+        devicePaused: this.isDevicePaused(dev, now)
       };
     }
     return out;
-  }
-
-  getRTStatus(tag){
-    const rt = this.rt[tag];
-    if (!rt) return { status: null, override: null };
-    return { status: rt.status, override: rt.override };
   }
 }
 

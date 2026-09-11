@@ -117,7 +117,12 @@ document.querySelectorAll('#tabs .tab').forEach(tab => {
     if (name === 'dev')  renderDevices();
     if (name === 'mail') loadMailToUI();
     if (name === 'set')  refreshLog();
-    if (name === 'canvas') canvasLoad();
+    if (name === 'canvas'){
+      // 每次进画布页都重新拉一次变量名
+      if (window.__canvasReloadVars) window.__canvasReloadVars().then(canvasLoad);
+      else canvasLoad();
+    }
+    if (name === 'vars') renderVars();
   });
 });
 
@@ -204,39 +209,8 @@ async function togglePause(){
 }
 
 // ============================================================
-// 实时点位
+// 装置分类工具
 // ============================================================
-let liveTagList = [];
-
-async function renderLive(){
-  const data = await window.api.loadTags();
-  const cfg = await window.api.getConfig();
-  const snap = await window.api.snapshot();
-  const points = data.points || [];
-  const tb = document.getElementById('liveBody');
-  liveTagList = points.map(p => p.tag);
-
-  if (!points.length){
-    tb.innerHTML = '<tr><td colspan="7" class="empty">暂无位号，请到「规则配置」导入</td></tr>';
-    document.getElementById('liveCount').textContent = '';
-    return;
-  }
-  tb.innerHTML = points.map((p, i) => {
-    return '<tr id="live_' + i + '">' +
-      '<td title="' + esc(p.tag) + '">' + esc(p.tag) + '</td>' +
-      '<td>' + esc(p.desc || '') + '</td>' +
-      '<td class="v" id="lv_' + i + '">-</td>' +
-      '<td>' + esc(p.unit || '') + '</td>' +
-      '<td id="llv_' + i + '">-</td>' +
-      '<td id="ldev_' + i + '">' + esc(getDeviceOf(p.tag, cfg.devices)) + '</td>' +
-      '<td id="lt_' + i + '">-</td>' +
-    '</tr>';
-  }).join('');
-  document.getElementById('liveCount').textContent = '共 ' + points.length + ' 个位号';
-
-  updateLiveRows(snap, points);
-}
-
 function getDeviceOf(tag, devices){
   if (!tag) return '未分类';
   const up = String(tag).toUpperCase();
@@ -250,31 +224,300 @@ function getDeviceOf(tag, devices){
   return '未分类';
 }
 
-function updateLiveRows(snap, points){
-  for (let i = 0; i < points.length; i++){
-    const p = points[i];
-    const s = snap[p.tag];
-    if (!s) continue;
-    const row = document.getElementById('live_' + i);
-    const ev = document.getElementById('lv_' + i);
-    const el = document.getElementById('llv_' + i);
-    const et = document.getElementById('lt_' + i);
-    if (!ev) continue;
+// ============================================================
+// 实时点位
+// ============================================================
+let livePointsCache = [];
+let liveDeviceMap = {};
+let liveCollapse = {};
+let liveSnapshot = {};
+let liveDevicePause = {};
+let dragCtx = null;
 
-    const v = s.value;
-    const lvl = levelOf(p, v, s.thresholds);
-    ev.textContent = fmtVal(v);
-    ev.className = 'v ' + (lvl ? 'lv-' + lvl : (v == null ? '' : 'lv-ok'));
-    el.textContent = lvl || (v == null ? '等待' : '正常');
-    el.className = lvl ? 'lv-' + lvl : 'lv-ok';
-    et.textContent = fmtTime(s.lastUpdate);
-    if (row){
-      if (s.inAlarm) row.classList.add('alarm-row');
-      else row.classList.remove('alarm-row');
-    }
+async function renderLive(){
+  const data = await window.api.loadTags();
+  const cfg = await window.api.getConfig();
+  const pauseR = await window.api.pauseList();
+  const points = data.points || [];
+  const liveOrder = data.liveOrder || [];
+
+  livePointsCache = points;
+  liveDeviceMap = {};
+  for (const p of points){
+    liveDeviceMap[p.tag] = getDeviceOf(p.tag, cfg.devices);
   }
+  liveDevicePause = pauseR.list || {};
+
+  const groups = groupByDevice(points, cfg.devices, liveOrder);
+  const box = document.getElementById('liveGroups');
+
+  if (!points.length){
+    box.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:40px;' +
+                    'border:1px dashed #e2e8f0;border-radius:6px;background:#fafbfc">' +
+                    '暂无位号，请到「规则配置」导入</div>';
+    document.getElementById('liveCount').textContent = '';
+    return;
+  }
+
+  box.innerHTML = groups.map(g => groupHtml(g)).join('');
+  document.getElementById('liveCount').textContent =
+    '共 ' + points.length + ' 个位号，' + groups.length + ' 个装置';
+
+  bindCardEvents();
+  await refreshLiveValues();
+  updatePauseTimers();
 }
 
+function groupByDevice(points, devices, liveOrder){
+  const orderMap = {};
+  (liveOrder || []).forEach((t, i) => { orderMap[t] = i; });
+  const map = {};
+  const present = [];
+  for (const p of points){
+    const dev = getDeviceOf(p.tag, devices);
+    if (!map[dev]){ map[dev] = []; present.push(dev); }
+    map[dev].push(p);
+  }
+  const ordered = [];
+  for (const d of (devices || [])){
+    if (d && d.name && map[d.name]) ordered.push(d.name);
+  }
+  if (map['未分类']) ordered.push('未分类');
+  for (const name of present){
+    if (ordered.indexOf(name) === -1) ordered.push(name);
+  }
+  return ordered.map(name => {
+    const items = map[name].slice();
+    items.sort((a, b) => {
+      const ai = orderMap[a.tag] !== undefined ? orderMap[a.tag] : 999999;
+      const bi = orderMap[b.tag] !== undefined ? orderMap[b.tag] : 999999;
+      return ai - bi;
+    });
+    return { name, items };
+  });
+}
+
+function isDevicePaused(dev, now){
+  const until = liveDevicePause[dev];
+  if (until === undefined) return false;
+  if (until === 0) return true;
+  return now < until;
+}
+
+function pauseStatusText(dev, now){
+  const until = liveDevicePause[dev];
+  if (until === undefined) return '';
+  if (until === 0) return '已暂停（手动恢复）';
+  const sec = Math.max(0, Math.floor((until - now) / 1000));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return '暂停 ' + m + ':' + String(s).padStart(2, '0');
+}
+
+function groupHtml(g){
+  const collapsed = !!liveCollapse[g.name];
+  const now = Date.now();
+  const paused = isDevicePaused(g.name, now);
+  let alarmCnt = 0;
+  if (!paused){
+    for (const p of g.items){
+      const s = liveSnapshot[p.tag];
+      if (s && s.inAlarm) alarmCnt++;
+    }
+  }
+  const pauseBtn = paused
+    ? '<button class="dev-pause-btn paused" data-pause-toggle="' + esc(g.name) + '">▶ 恢复</button>'
+    : '<button class="dev-pause-btn" data-pause-toggle="' + esc(g.name) + '">⏸ 暂停</button>';
+
+  return '<div class="live-dev-group' + (paused ? ' paused' : '') +
+         '" data-dev="' + esc(g.name) + '">' +
+    '<div class="live-dev-hd" data-toggle="' + esc(g.name) + '">' +
+      '<span class="arrow">' + (collapsed ? '▶' : '▼') + '</span>' +
+      '<span>' + esc(g.name) + '</span>' +
+      '<span class="cnt">' + g.items.length + ' 个点位</span>' +
+      (alarmCnt ? '<span class="alarm">⚠ 报警 ' + alarmCnt + '</span>' : '') +
+      (paused ? '<span class="pause-status" data-pause-status="' + esc(g.name) + '">' +
+                pauseStatusText(g.name, now) + '</span>' : '') +
+      '<span class="spacer"></span>' +
+      pauseBtn +
+    '</div>' +
+    '<div class="live-dev-body" data-body="' + esc(g.name) + '" style="' +
+         (collapsed ? 'display:none' : '') + '">' +
+      g.items.map(p => cardHtml(p, paused)).join('') +
+    '</div>' +
+  '</div>';
+}
+
+function cardHtml(p, muted){
+  const dev = liveDeviceMap[p.tag] || '';
+  return '<div class="pcard' + (muted ? ' muted' : '') + '" draggable="true" ' +
+    'data-tag="' + esc(p.tag) + '" data-dev="' + esc(dev) + '">' +
+    '<div class="pc-tag" title="' + esc(p.tag) + '">' + esc(p.tag) + '</div>' +
+    '<div class="pc-desc" title="' + esc(p.desc || '') + '">' +
+      (p.desc ? esc(p.desc) : '&nbsp;') + '</div>' +
+    '<div><span class="pc-val" data-val="' + esc(p.tag) + '">-</span>' +
+      '<span class="pc-unit">' + esc(p.unit || '') + '</span></div>' +
+    '<div class="pc-foot">' +
+      '<span class="pc-lv ok" data-lv="' + esc(p.tag) + '">-</span>' +
+      '<span data-time="' + esc(p.tag) + '">-</span>' +
+    '</div>' +
+  '</div>';
+}
+
+function bindCardEvents(){
+  const box = document.getElementById('liveGroups');
+
+  box.querySelectorAll('.live-dev-hd').forEach(hd => {
+    hd.addEventListener('click', (e) => {
+      if (e.target.closest('.dev-pause-btn')) return;
+      const name = hd.getAttribute('data-toggle');
+      liveCollapse[name] = !liveCollapse[name];
+      const group = hd.parentNode;
+      const body = group.querySelector('.live-dev-body');
+      const arrow = hd.querySelector('.arrow');
+      if (liveCollapse[name]){
+        body.style.display = 'none';
+        arrow.textContent = '▶';
+      } else {
+        body.style.display = '';
+        arrow.textContent = '▼';
+      }
+    });
+  });
+
+  box.querySelectorAll('[data-pause-toggle]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const dev = btn.getAttribute('data-pause-toggle');
+      const now = Date.now();
+      if (isDevicePaused(dev, now)){
+        await window.api.resumeDevice(dev);
+        await renderLive();
+        return;
+      }
+      const v = await inputDialog({
+        title: '暂停装置报警 · ' + dev,
+        hint: '输入暂停分钟数（例如 30 / 60），<b>留空表示手动恢复</b>。<br>' +
+              '暂停期间：该装置内所有测点<b>不再弹窗、不发邮件</b>，数值照常显示。',
+        defaultValue: '30'
+      });
+      if (v === null) return;
+      const m = v.trim() === '' ? 0 : parseFloat(v);
+      if (v.trim() !== '' && (isNaN(m) || m <= 0)){
+        await msgBox('请输入有效分钟数。');
+        return;
+      }
+      await window.api.pauseDevice(dev, m);
+      await renderLive();
+    });
+  });
+
+  box.querySelectorAll('.pcard').forEach(card => {
+    card.addEventListener('dragstart', e => {
+      const tag = card.getAttribute('data-tag');
+      const dev = card.getAttribute('data-dev');
+      dragCtx = { tag, dev };
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', tag); } catch(_) {}
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      box.querySelectorAll('.pcard').forEach(c => {
+        c.classList.remove('drop-before','drop-after');
+      });
+      box.querySelectorAll('.live-dev-body').forEach(b => {
+        b.classList.remove('drag-over');
+      });
+      dragCtx = null;
+    });
+    card.addEventListener('dragover', e => {
+      if (!dragCtx) return;
+      if (card.getAttribute('data-dev') !== dragCtx.dev) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const r = card.getBoundingClientRect();
+      const before = (e.clientX - r.left) < r.width / 2;
+      box.querySelectorAll('.pcard').forEach(c => c.classList.remove('drop-before','drop-after'));
+      card.classList.add(before ? 'drop-before' : 'drop-after');
+    });
+    card.addEventListener('dragleave', () => {
+      card.classList.remove('drop-before','drop-after');
+    });
+    card.addEventListener('drop', async e => {
+      e.preventDefault();
+      if (!dragCtx) return;
+      if (card.getAttribute('data-dev') !== dragCtx.dev) return;
+      const targetTag = card.getAttribute('data-tag');
+      if (targetTag === dragCtx.tag) return;
+      const r = card.getBoundingClientRect();
+      const before = (e.clientX - r.left) < r.width / 2;
+      const srcTag = dragCtx.tag;
+      dragCtx = null;
+      await reorderCard(srcTag, targetTag, before);
+    });
+  });
+
+  box.querySelectorAll('.live-dev-body').forEach(body => {
+    body.addEventListener('dragover', e => {
+      if (!dragCtx) return;
+      if (body.getAttribute('data-body') !== dragCtx.dev) return;
+      e.preventDefault();
+      body.classList.add('drag-over');
+    });
+    body.addEventListener('dragleave', e => {
+      if (e.target === body) body.classList.remove('drag-over');
+    });
+    body.addEventListener('drop', async e => {
+      if (!dragCtx) return;
+      if (body.getAttribute('data-body') !== dragCtx.dev) return;
+      if (e.target.closest('.pcard')) return;
+      e.preventDefault();
+      body.classList.remove('drag-over');
+      const srcTag = dragCtx.tag;
+      dragCtx = null;
+      await reorderCard(srcTag, null, false);
+    });
+  });
+}
+
+async function reorderCard(srcTag, targetTag, before){
+  const data = await window.api.loadTags();
+  const points = data.points || [];
+  let order = (data.liveOrder || []).slice();
+  const set = {};
+  order.forEach(t => { set[t] = true; });
+  for (const p of points){
+    if (!set[p.tag]) order.push(p.tag);
+  }
+  order = order.filter(t => t !== srcTag);
+  if (targetTag){
+    const idx = order.indexOf(targetTag);
+    if (idx === -1) order.push(srcTag);
+    else order.splice(before ? idx : idx + 1, 0, srcTag);
+  } else {
+    const dev = liveDeviceMap[srcTag];
+    const siblings = points
+      .filter(p => liveDeviceMap[p.tag] === dev && p.tag !== srcTag)
+      .map(p => p.tag);
+    if (siblings.length){
+      let lastIdx = -1;
+      for (const s of siblings){
+        const i = order.indexOf(s);
+        if (i > lastIdx) lastIdx = i;
+      }
+      order.splice(lastIdx + 1, 0, srcTag);
+    } else {
+      order.push(srcTag);
+    }
+  }
+  await window.api.saveLiveOrder(order);
+  await renderLive();
+}
+
+// ============================================================
+// 实时数值刷新
+// ============================================================
 function levelOf(p, v, t){
   if (typeof v !== 'number' || isNaN(v)) return null;
   if (t.hh != null && v >= t.hh) return 'HH';
@@ -284,14 +527,113 @@ function levelOf(p, v, t){
   return null;
 }
 
+async function refreshLiveValues(){
+  const snap = await window.api.snapshot();
+  liveSnapshot = snap || {};
+  for (const p of livePointsCache) updateCard(p);
+  updateGroupAlarms();
+}
+
+function updateCard(p){
+  const s = liveSnapshot[p.tag];
+  const card = document.querySelector('.pcard[data-tag="' + cssEsc(p.tag) + '"]');
+  if (!card) return;
+  if (!s){ card.className = 'pcard'; return; }
+
+  const valEl = card.querySelector('[data-val]');
+  const lvEl  = card.querySelector('[data-lv]');
+  const tEl   = card.querySelector('[data-time]');
+
+  const v = s.value;
+  const dev = liveDeviceMap[p.tag];
+  const paused = isDevicePaused(dev, Date.now());
+  const lvl = paused ? null : levelOf(p, v, s.thresholds);
+
+  if (valEl) valEl.textContent = fmtVal(v);
+
+  let cls = 'pcard';
+  if (paused) cls += ' muted';
+  if (lvl) cls += ' lv-' + lvl;
+  else if (v != null && !paused) cls += ' lv-ok';
+  if (s.inAlarm && !paused) cls += ' alarming';
+  card.className = cls;
+
+  if (lvEl){
+    if (paused){
+      lvEl.className = 'pc-lv paused';
+      lvEl.textContent = '已暂停';
+    } else if (lvl){
+      lvEl.className = 'pc-lv ' + lvl;
+      lvEl.textContent = lvl;
+    } else {
+      lvEl.className = 'pc-lv ok';
+      lvEl.textContent = (v == null) ? '等待' : '正常';
+    }
+  }
+  if (tEl) tEl.textContent = fmtTime(s.lastUpdate);
+}
+
+function updateGroupAlarms(){
+  document.querySelectorAll('.live-dev-group').forEach(g => {
+    const dev = g.getAttribute('data-dev');
+    const now = Date.now();
+    const paused = isDevicePaused(dev, now);
+    g.classList.toggle('paused', paused);
+    let alarmCnt = 0;
+    if (!paused){
+      for (const p of livePointsCache){
+        if (liveDeviceMap[p.tag] !== dev) continue;
+        const s = liveSnapshot[p.tag];
+        if (s && s.inAlarm) alarmCnt++;
+      }
+    }
+    const hd = g.querySelector('.live-dev-hd');
+    let alarmEl = hd.querySelector('.alarm');
+    if (alarmCnt){
+      if (!alarmEl){
+        alarmEl = document.createElement('span');
+        alarmEl.className = 'alarm';
+        const sp = hd.querySelector('.spacer');
+        hd.insertBefore(alarmEl, sp);
+      }
+      alarmEl.textContent = '⚠ 报警 ' + alarmCnt;
+    } else if (alarmEl){
+      alarmEl.remove();
+    }
+  });
+}
+
+function updatePauseTimers(){
+  const now = Date.now();
+  document.querySelectorAll('[data-pause-status]').forEach(el => {
+    const dev = el.getAttribute('data-pause-status');
+    if (isDevicePaused(dev, now)){
+      el.textContent = pauseStatusText(dev, now);
+    }
+  });
+}
+
+function cssEsc(s){
+  return String(s).replace(/(["\\])/g, '\\$1');
+}
+
 setInterval(async () => {
   const page = document.getElementById('page-live');
   if (!page.classList.contains('active')) return;
   if (isEditing()) return;
-  if (!liveTagList.length) return;
+  if (!livePointsCache.length) return;
+  const now = Date.now();
+  let changed = false;
+  for (const dev in liveDevicePause){
+    const until = liveDevicePause[dev];
+    if (until > 0 && now >= until){ changed = true; break; }
+  }
+  if (changed){ await renderLive(); return; }
   const snap = await window.api.snapshot();
-  const data = await window.api.loadTags();
-  updateLiveRows(snap, data.points || []);
+  liveSnapshot = snap || {};
+  for (const p of livePointsCache) updateCard(p);
+  updateGroupAlarms();
+  updatePauseTimers();
 }, 1000);
 
 // ============================================================
@@ -338,7 +680,6 @@ async function renderRuleTable(){
       renderRuleTable();
     });
   });
-
   document.getElementById('ruleCount').textContent = '共 ' + points.length + ' 个位号';
 }
 
@@ -347,7 +688,6 @@ async function saveRules(){
   const rows = tb.querySelectorAll('tr[data-i]');
   const data = await window.api.loadTags();
   const points = data.points;
-
   rows.forEach(row => {
     const i = Number(row.getAttribute('data-i'));
     const p = points[i];
@@ -373,7 +713,6 @@ async function saveRules(){
     const en = row.querySelector('.c-en');
     p.enabled = en ? !!en.checked : true;
   });
-
   await window.api.saveRules(points);
   await msgBox('规则已保存，共 ' + points.length + ' 个位号。', '保存成功');
   renderRuleTable();
@@ -426,15 +765,11 @@ async function fetchMeta(){
   }
 }
 
-// ---- 三期：规则测试 ----
 async function openTestRule(){
   const data = await window.api.loadTags();
   const points = data.points || [];
   const sel = document.getElementById('testTag');
-  if (!points.length){
-    await msgBox('暂无位号，请先导入位号。', '无法测试');
-    return;
-  }
+  if (!points.length){ await msgBox('暂无位号，请先导入位号。', '无法测试'); return; }
   sel.innerHTML = points.map(p =>
     '<option value="' + esc(p.tag) + '">' + esc(p.tag) +
     (p.desc ? ' · ' + esc(p.desc) : '') + '</option>'
@@ -452,18 +787,13 @@ async function runTestRule(){
   const r = await window.api.testRule({ tag, value });
   const box = document.getElementById('testResult');
   box.style.display = 'block';
-  if (!r.ok){
-    box.innerHTML = '<div style="color:#dc2626">错误：' + esc(r.error) + '</div>';
-    return;
-  }
+  if (!r.ok){ box.innerHTML = '<div style="color:#dc2626">错误：' + esc(r.error) + '</div>'; return; }
   const t = r.thresholds;
   const levelColors = { HH:'#dc2626', H:'#f97316', L:'#ca8a04', LL:'#2563eb' };
   const levelTxt = r.level
     ? '<b style="color:' + levelColors[r.level] + '">' + r.level + '</b>'
     : '<span style="color:#16a34a">正常</span>';
-  const cd = r.cooldownUntil
-    ? new Date(r.cooldownUntil).toLocaleTimeString('zh-CN')
-    : '未进入冷却';
+  const cd = r.cooldownUntil ? new Date(r.cooldownUntil).toLocaleTimeString('zh-CN') : '未进入冷却';
   box.innerHTML =
     '<div><b>判断结果：</b>' + levelTxt + '</div>' +
     '<div style="color:#64748b;margin-top:4px">' +
@@ -477,8 +807,7 @@ async function runTestRule(){
       '持续时间：' + r.duration + ' 秒　冷却：' + r.cooldown + ' 分钟' +
     '</div>' +
     '<div style="color:#64748b;margin-top:4px">' +
-      '当前报警中：' + (r.inAlarm ? '是' : '否') +
-      '　冷却至：' + cd +
+      '当前报警中：' + (r.inAlarm ? '是' : '否') + '　冷却至：' + cd +
     '</div>';
 }
 
@@ -556,6 +885,168 @@ async function saveDevices(){
 }
 
 // ============================================================
+// 环境变量页
+// ============================================================
+let varDraft = [];
+let varRuntime = {};
+
+async function renderVars(){
+  const r = await window.api.loadVars();
+  varDraft = JSON.parse(JSON.stringify(r.vars || []));
+  await refreshVarRuntime();
+  renderVarList();
+}
+
+async function refreshVarRuntime(){
+  try {
+    const r = await window.api.varsRuntime();
+    varRuntime = (r && r.vars) || {};
+  } catch (e) {
+    varRuntime = {};
+  }
+}
+
+function renderVarList(){
+  const tb = document.getElementById('varBody');
+  if (!varDraft.length){
+    tb.innerHTML = '<tr><td colspan="6" class="empty">' +
+      '暂无环境变量，点「＋ 添加变量」开始</td></tr>';
+    document.getElementById('varStat').textContent = '';
+    return;
+  }
+  tb.innerHTML = varDraft.map((v, i) => {
+    const rt = varRuntime[v.name];
+    const rtTxt = (rt === undefined || rt === null || rt === '')
+      ? '<span class="var-rt empty">—</span>'
+      : '<span class="var-rt">' + esc(String(rt)) + '</span>';
+    return '<tr data-i="' + i + '">' +
+      '<td><input type="text" class="c-vname" value="' + esc(v.name || '') + '" placeholder="var1"></td>' +
+      '<td>' +
+        '<select class="c-vtype">' +
+          '<option value="number"' + (v.type !== 'string' ? ' selected' : '') + '>数值</option>' +
+          '<option value="string"' + (v.type === 'string' ? ' selected' : '') + '>文本</option>' +
+        '</select>' +
+      '</td>' +
+      '<td><input type="text" class="c-vinit" value="' + esc(v.init == null ? '' : v.init) + '" placeholder="0"></td>' +
+      '<td><input type="text" class="c-vdesc" value="' + esc(v.desc || '') + '" placeholder="描述（可空）"></td>' +
+      '<td>' + rtTxt + '</td>' +
+      '<td class="var-actions"><button class="var-del" data-vdel="' + i + '">×</button></td>' +
+    '</tr>';
+  }).join('');
+
+  tb.querySelectorAll('[data-vdel]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const i = Number(btn.getAttribute('data-vdel'));
+      const v = varDraft[i];
+      if (!v) return;
+      const ok = await confirmBox('确认删除变量「' + v.name + '」？', '删除确认');
+      if (!ok) return;
+      varDraft.splice(i, 1);
+      renderVarList();
+    });
+  });
+
+  document.getElementById('varStat').textContent =
+    '共 ' + varDraft.length + ' 个变量';
+}
+
+async function addVarRow(){
+  const name = await inputDialog({
+    title: '添加变量',
+    hint: '格式：<b>变量名,类型(n/s),初始值,描述</b><br>' +
+          '例如：<br>alarm_flag,n,0,报警标记<br>' +
+          'area_name,s,,区域名',
+    defaultValue: ''
+  });
+  if (!name) return;
+  const parts = name.split(/[,，\t]/).map(s => s.trim());
+  const vn = parts[0];
+  if (!vn){ await msgBox('变量名不能为空'); return; }
+  const type = (parts[1] || 'n').toLowerCase().startsWith('s') ? 'string' : 'number';
+  const init = parts[2] == null || parts[2] === ''
+    ? (type === 'string' ? '' : 0)
+    : parts[2];
+  const desc = parts[3] || '';
+
+  const r = await window.api.addVar({ name: vn, type, init, desc });
+  if (!r.ok){ await msgBox('添加失败：' + r.error, '失败'); return; }
+  // 添加成功后重新拉取并刷新；也同步画布页变量名
+  await renderVars();
+  if (window.__canvasReloadVars) window.__canvasReloadVars();
+  renderVarList();
+}
+
+async function saveVars(){
+  // 收集表格
+  const tb = document.getElementById('varBody');
+  const rows = tb.querySelectorAll('tr[data-i]');
+  const out = [];
+  const seen = {};
+  let err = '';
+  rows.forEach(row => {
+    const i = Number(row.getAttribute('data-i'));
+    const cur = varDraft[i] || {};
+    const g = cls => {
+      const el = row.querySelector('.' + cls);
+      return el ? el.value : '';
+    };
+    const name = String(g('c-vname') || '').trim();
+    if (!name) return;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)){
+      err = '变量名不合法：' + name; return;
+    }
+    if (seen[name]){ err = '变量名重复：' + name; return; }
+    seen[name] = true;
+    const type = g('c-vtype') === 'string' ? 'string' : 'number';
+    let init = g('c-vinit');
+    if (type === 'number'){
+      if (init === '') init = 0;
+      else {
+        const n = Number(init);
+        if (isNaN(n)){ err = name + ' 的初始值不是数字'; return; }
+        init = n;
+      }
+    }
+    out.push({
+      id: cur.id,
+      name,
+      type,
+      init,
+      desc: String(g('c-vdesc') || '').trim()
+    });
+  });
+  if (err){ await msgBox(err, '保存失败'); return; }
+
+  const r = await window.api.saveVars(out);
+  if (!r.ok){ await msgBox('保存失败：' + r.error, '失败'); return; }
+  await msgBox('环境变量已保存，共 ' + r.total + ' 个。', '保存成功');
+  await renderVars();
+  if (window.__canvasReloadVars) window.__canvasReloadVars();
+}
+
+// 定时刷新运行时值显示
+setInterval(async () => {
+  const page = document.getElementById('page-vars');
+  if (!page || !page.classList.contains('active')) return;
+  await refreshVarRuntime();
+  const tb = document.getElementById('varBody');
+  if (!tb) return;
+  tb.querySelectorAll('tr[data-i]').forEach(row => {
+    const i = Number(row.getAttribute('data-i'));
+    const v = varDraft[i];
+    if (!v) return;
+    const rt = varRuntime[v.name];
+    const td = row.children[4];
+    if (!td) return;
+    if (rt === undefined || rt === null || rt === ''){
+      td.innerHTML = '<span class="var-rt empty">—</span>';
+    } else {
+      td.innerHTML = '<span class="var-rt">' + esc(String(rt)) + '</span>';
+    }
+  });
+}, 2000);
+
+// ============================================================
 // 邮件
 // ============================================================
 async function loadMailToUI(){
@@ -564,6 +1055,32 @@ async function loadMailToUI(){
   document.getElementById('mailFrom').value = (cfg.mail && cfg.mail.from) || '';
   document.getElementById('mailPass').value = (cfg.mail && cfg.mail.pass) || '';
   document.getElementById('mailTo').value   = (cfg.mail && cfg.mail.to)   || '';
+  document.getElementById('mailImapEnabled').checked = !!(cfg.mail && cfg.mail.imapEnabled);
+  await refreshMuteStatus();
+}
+
+async function refreshMuteStatus(){
+  const r = await window.api.muteStatus();
+  const el = document.getElementById('mailMuteStatus');
+  if (!el) return;
+  if (r.alertMuted){
+    const t = r.mutedAt ? new Date(r.mutedAt).toLocaleString('zh-CN') : '-';
+    el.innerHTML = '<span style="display:inline-block;background:#fee2e2;color:#dc2626;' +
+                   'padding:2px 9px;border-radius:8px;font-size:12px;font-weight:600;">' +
+                   '⚠ 已静音</span>' +
+                   '<span style="color:#64748b;font-size:11px;margin-left:8px;">' +
+                   t + ' 由 ' + esc(r.mutedBy || '-') + ' 触发</span>';
+  } else {
+    let listen;
+    if (r.busy) listen = '<span style="color:#f59e0b">正在检查…</span>';
+    else if (!r.imapEnabled) listen = '<span style="color:#94a3b8">邮件指令未启用</span>';
+    else if (r.running) listen = '<span style="color:#16a34a">邮件指令监听中</span>';
+    else listen = '<span style="color:#f59e0b">邮件指令未运行</span>';
+    el.innerHTML = '<span style="display:inline-block;background:#dcfce7;color:#16a34a;' +
+                   'padding:2px 9px;border-radius:8px;font-size:12px;font-weight:600;">' +
+                   '✓ 活跃</span>' +
+                   '<span style="color:#64748b;font-size:11px;margin-left:8px;">' + listen + '</span>';
+  }
 }
 
 async function saveMail(){
@@ -571,9 +1088,11 @@ async function saveMail(){
     enabled: document.getElementById('mailEnabled').checked,
     from: document.getElementById('mailFrom').value.trim(),
     pass: document.getElementById('mailPass').value,
-    to:   document.getElementById('mailTo').value.trim()
+    to:   document.getElementById('mailTo').value.trim(),
+    imapEnabled: document.getElementById('mailImapEnabled').checked
   };
   await window.api.saveMail(mail);
+  await refreshMuteStatus();
   await msgBox('邮件设置已保存。', '保存成功');
 }
 
@@ -584,8 +1103,41 @@ async function testMail(){
   else await msgBox('发送失败：' + r.error, '失败');
 }
 
+async function unmuteMail(){
+  await window.api.unmuteMail();
+  await refreshMuteStatus();
+  await msgBox('邮件报警已恢复。', '恢复成功');
+}
+
+async function checkMailNow(){
+  const stat = document.getElementById('mailCmdStat');
+  stat.textContent = '正在检查…';
+  stat.style.color = '#64748b';
+  try {
+    const r = await window.api.checkMailNow();
+    await refreshMuteStatus();
+    if (r && r.ok === false){
+      stat.textContent = '检查失败：' + (r.message || '未知错误') + ' ' +
+                         new Date().toLocaleTimeString('zh-CN');
+      stat.style.color = '#dc2626';
+    } else {
+      const parts = [];
+      if (r && typeof r.processed === 'number') parts.push('处理 ' + r.processed + ' 封');
+      if (r && typeof r.skipped === 'number' && r.skipped) parts.push('跳过 ' + r.skipped + ' 封');
+      if (r && r.muted) parts.push('已静音');
+      if (r && r.elapsed) parts.push('耗时 ' + r.elapsed + 's');
+      stat.textContent = '检查完成 ' + new Date().toLocaleTimeString('zh-CN') +
+                         (parts.length ? '（' + parts.join('，') + '）' : '');
+      stat.style.color = '#16a34a';
+    }
+  } catch (e){
+    stat.textContent = '检查异常：' + e.message;
+    stat.style.color = '#dc2626';
+  }
+}
+
 // ============================================================
-// 三期：配置导入/导出
+// 配置导入/导出
 // ============================================================
 async function exportCfg(){
   const r = await window.api.exportConfig();
@@ -596,9 +1148,7 @@ async function exportCfg(){
   } else if (r.error !== '已取消'){
     stat.textContent = '失败：' + r.error;
     stat.style.color = '#dc2626';
-  } else {
-    stat.textContent = '';
-  }
+  } else stat.textContent = '';
 }
 
 async function importCfg(){
@@ -619,21 +1169,16 @@ async function importCfg(){
   }
   stat.textContent = '导入成功：位号 ' + r.points + '，装置 ' + r.devices + '，画布 ' + r.canvas;
   stat.style.color = '#16a34a';
-  await msgBox(
-    '配置导入完成。\n\n由于账号/服务器可能已变，建议点「保存并重连」重新登录。',
-    '导入完成'
-  );
-  // 刷新所有 UI
+  await msgBox('配置导入完成。\n\n由于账号/服务器可能已变，建议点「保存并重连」重新登录。', '导入完成');
   await loadConfigToUI();
   renderLive();
   renderRuleTable();
   renderDevices();
   loadMailToUI();
+  renderVars();
+  if (window.__canvasReloadVars) window.__canvasReloadVars();
 }
 
-// ============================================================
-// 三期：检查更新
-// ============================================================
 async function checkUpdate(){
   const stat = document.getElementById('updateStat');
   stat.textContent = '正在检查…';
@@ -682,6 +1227,14 @@ bind('btnSaveAccount', saveAccount);
 bind('btnRelogin', relogin);
 bind('btnPause', togglePause);
 bind('btnLiveRefresh', renderLive);
+bind('btnLiveExpandAll', () => { liveCollapse = {}; renderLive(); });
+bind('btnLiveCollapseAll', () => {
+  liveCollapse = {};
+  for (const p of livePointsCache){
+    liveCollapse[liveDeviceMap[p.tag]] = true;
+  }
+  renderLive();
+});
 bind('btnAddTag', addTag);
 bind('btnImportTags', importTags);
 bind('btnImportExcel', importExcel);
@@ -693,6 +1246,8 @@ bind('btnDevAdd', () => { deviceDraft.push({ name: '', keywords: [] }); renderDe
 bind('btnDevSave', saveDevices);
 bind('btnMailSave', saveMail);
 bind('btnMailTest', testMail);
+bind('btnMailUnmute', unmuteMail);
+bind('btnMailCheckNow', checkMailNow);
 bind('btnLogRefresh', refreshLog);
 bind('btnLogClear', clearLog);
 bind('btnExportCfg', exportCfg);
@@ -704,7 +1259,11 @@ bind('btnAuto', async () => {
   document.getElementById('btnAuto').textContent = '开机自启：' + (!cur ? '开' : '关');
 });
 
-// 规则测试弹框绑定
+// 环境变量页按钮
+bind('btnVarAdd', addVarRow);
+bind('btnVarReload', renderVars);
+bind('btnVarSave', saveVars);
+
 document.getElementById('testCancel').addEventListener('click', () => {
   document.getElementById('testModal').style.display = 'none';
 });
@@ -713,7 +1272,6 @@ document.getElementById('testValue').addEventListener('keydown', e => {
   if (e.key === 'Enter') runTestRule();
 });
 
-// 主进程推送
 window.api.onConnState(d => setConn(d.state, d.text));
 window.api.onUpdateStatus(d => {
   const stat = document.getElementById('updateStat');
@@ -729,7 +1287,15 @@ window.api.onConfigReloaded(() => {
   renderRuleTable();
   renderDevices();
   loadMailToUI();
+  renderVars();
 });
+
+setInterval(() => {
+  const page = document.getElementById('page-mail');
+  if (page && page.classList.contains('active')){
+    refreshMuteStatus();
+  }
+}, 10000);
 
 // ============================================================
 // 启动

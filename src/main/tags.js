@@ -5,15 +5,24 @@ const path = require('path');
 const FILE = path.join(app.getPath('userData'), 'tags.json');
 
 function load(){
-  if (!fs.existsSync(FILE)) return { points: [] };
+  if (!fs.existsSync(FILE)) return { points: [], liveOrder: [] };
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-    return { points: raw.points || [] };
-  } catch (e) { return { points: [] }; }
+    return {
+      points: raw.points || [],
+      liveOrder: raw.liveOrder || []
+    };
+  } catch (e) { return { points: [], liveOrder: [] }; }
 }
 
+// 合并保存：传入 {points} 或 {liveOrder} 或两者，缺失的用现有值
 function save(data){
-  fs.writeFileSync(FILE, JSON.stringify(data, null, 2), 'utf8');
+  const cur = load();
+  const out = {
+    points:    Array.isArray(data && data.points)    ? data.points    : cur.points,
+    liveOrder: Array.isArray(data && data.liveOrder) ? data.liveOrder : cur.liveOrder
+  };
+  fs.writeFileSync(FILE, JSON.stringify(out, null, 2), 'utf8');
   return true;
 }
 
@@ -65,7 +74,10 @@ function addOne({ tag, desc, unit }){
 function removeOne(index){
   const cur = load();
   if (index < 0 || index >= cur.points.length) return { ok: false, error: '索引越界' };
+  const removed = cur.points[index];
   cur.points.splice(index, 1);
+  // 同时从 liveOrder 移除
+  cur.liveOrder = (cur.liveOrder || []).filter(t => t !== removed.tag);
   save(cur);
   return { ok: true, total: cur.points.length };
 }
@@ -96,4 +108,11 @@ function importRows(rows){
   return { added, skipped, total: cur.points.length };
 }
 
-module.exports = { load, save, importText, addOne, removeOne, importRows };
+function saveLiveOrder(order){
+  const cur = load();
+  cur.liveOrder = Array.isArray(order) ? order : [];
+  save(cur);
+  return { ok: true };
+}
+
+module.exports = { load, save, importText, addOne, removeOne, importRows, saveLiveOrder };

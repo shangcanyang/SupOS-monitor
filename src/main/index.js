@@ -5,10 +5,12 @@ const XLSX = require('xlsx');
 const config = require('./config');
 const auth = require('./auth');
 const tags = require('./tags');
+const vars = require('./vars');
 const logger = require('./logger');
 const WSClient = require('./ws-client');
 const RulesEngine = require('./rules-engine');
 const mailer = require('./mailer');
+const mailWatcher = require('./mail-watcher');
 const alertWindow = require('./alert-window');
 const tray = require('./tray');
 const configIO = require('./config-io');
@@ -25,12 +27,9 @@ let refreshTimer = null;
 let trimTimer = null;
 let quitting = false;
 
-// ============================================================
-// 主窗口
-// ============================================================
 function createMainWindow(){
   mainWin = new BrowserWindow({
-    width: 1080, height: 760,
+    width: 1180, height: 800,
     title: 'SupOS-monitor',
     show: false,
     webPreferences: {
@@ -40,18 +39,13 @@ function createMainWindow(){
     }
   });
   mainWin.loadFile(path.join(__dirname, '../renderer/main/index.html'));
-
   mainWin.once('ready-to-show', () => {
     mainWin.show();
     mainWin.focus();
     mainWin.moveTop();
   });
-
   mainWin.on('close', e => {
-    if (!quitting) {
-      e.preventDefault();
-      mainWin.hide();
-    }
+    if (!quitting) { e.preventDefault(); mainWin.hide(); }
   });
 }
 
@@ -61,9 +55,6 @@ function sendToMain(channel, data){
   }
 }
 
-// ============================================================
-// 启动流程
-// ============================================================
 async function startAll(){
   if (wsClient) { wsClient.close(); wsClient = null; }
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
@@ -71,7 +62,6 @@ async function startAll(){
 
   const cfg = config.load();
   if (!cfg.username || !cfg.password) {
-    logger.log('未配置账号，请在设置页填写', 'WARN');
     sendToMain('conn:state', { state: 'off', text: '未配置账号' });
     return;
   }
@@ -79,7 +69,6 @@ async function startAll(){
   sendToMain('conn:state', { state: 'wait', text: '登录中…' });
   const r = await auth.login(cfg);
   if (!r.ok) {
-    logger.log('登录失败：' + r.error, 'ERROR');
     sendToMain('conn:state', { state: 'off', text: '登录失败' });
     return;
   }
@@ -87,7 +76,6 @@ async function startAll(){
 
   refreshTimer = setInterval(async () => {
     const ok = await auth.refresh();
-    logger.log('ticket 续期' + (ok ? '成功' : '失败'), ok ? 'INFO' : 'WARN');
     if (!ok) startAll();
   }, 30 * 60 * 1000);
 
@@ -104,9 +92,6 @@ async function startAll(){
   wsClient.connect(tagList);
 }
 
-// ============================================================
-// 报警回调
-// ============================================================
 function onAlarm(){
   const items = engine.collectActive();
   if (!items.length) return;
@@ -114,12 +99,16 @@ function onAlarm(){
 
   const cfg = config.load();
   if (!cfg.mail.enabled) return;
+  if (cfg.mail.alertMuted) return;
   if (mailBufferTimer) clearTimeout(mailBufferTimer);
   mailBufferTimer = setTimeout(async () => {
     const its = engine.collectActive();
     if (!its.length) return;
+    const freshCfg = config.load();
+    if (!freshCfg.mail.enabled || freshCfg.mail.alertMuted) return;
     const subject = '【SupOS-monitor 报警】' + its.length + ' 项测点超限 - ' + logger.fmtDT(new Date());
-    await mailer.send(cfg.mail, subject, mailer.buildAlarmBody(its));
+    const body = mailer.buildAlarmBody(its);
+    await mailer.send(freshCfg.mail, subject, body.text, body.html);
   }, 1500);
 }
 
@@ -137,10 +126,8 @@ ipcMain.handle('auth:login', async () => {
   const r = await auth.login(cfg);
   if (r.ok) {
     sendToMain('conn:state', { state: 'on', text: '已登录 · ticket 有效期 ' + r.expire + ' 秒' });
-    logger.log('[手动登录] 成功');
   } else {
     sendToMain('conn:state', { state: 'off', text: '登录失败' });
-    logger.log('[手动登录] 失败 ' + r.error, 'ERROR');
   }
   return r;
 });
@@ -150,6 +137,14 @@ ipcMain.handle('tags:import', (_e,t)  => tags.importText(t));
 ipcMain.handle('tags:save',   (_e,d)  => tags.save(d));
 ipcMain.handle('tags:add',    (_e,o)  => tags.addOne(o));
 ipcMain.handle('tags:remove', (_e,i)  => tags.removeOne(i));
+ipcMain.handle('tags:saveLiveOrder', (_e, order) => tags.saveLiveOrder(order));
+
+// ---- 环境变量 ----
+ipcMain.handle('vars:load',   ()       => vars.load());
+ipcMain.handle('vars:saveAll',(_e,list)=> vars.saveAll(list));
+ipcMain.handle('vars:add',    (_e,o)   => vars.addOne(o));
+ipcMain.handle('vars:remove', (_e,id)  => vars.removeOne(id));
+ipcMain.handle('vars:runtime',()       => ({ ok: true, vars: engine ? engine.canvasVars : {} }));
 
 ipcMain.handle('tags:importExcel', async () => {
   const r = await dialog.showOpenDialog(mainWin, {
@@ -163,10 +158,8 @@ ipcMain.handle('tags:importExcel', async () => {
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
     const res = tags.importRows(rows);
-    logger.log('Excel 导入完成：新增 ' + res.added + '，跳过重复 ' + res.skipped);
     return { ok: true, added: res.added, skipped: res.skipped, total: res.total };
   } catch (e) {
-    logger.log('Excel 解析失败：' + e.message, 'ERROR');
     return { ok: false, error: e.message };
   }
 });
@@ -186,7 +179,6 @@ ipcMain.handle('rules:save', (_e, points) => {
   return { ok: true };
 });
 
-// 规则测试：传入 tag + 值，返回命中级别 + 冷却状态
 ipcMain.handle('rule:test', (_e, { tag, value }) => {
   const cur = tags.load();
   const p = cur.points.find(x => x.tag === tag);
@@ -211,11 +203,14 @@ ipcMain.handle('live:snapshot', () => engine.snapshot());
 
 ipcMain.handle('mail:save', (_e, mail) => {
   const cfg = config.load();
-  cfg.mail = mail;
+  cfg.mail = Object.assign({}, cfg.mail, mail);
+  if (mail.alertMuted === undefined) cfg.mail.alertMuted = cfg.mail.alertMuted || false;
   config.save(cfg);
-  logger.log('邮件配置已保存');
+  if (cfg.mail.imapEnabled && cfg.mail.enabled) mailWatcher.start();
+  else mailWatcher.stop();
   return { ok: true };
 });
+
 ipcMain.handle('mail:test', async () => {
   const cfg = config.load();
   const items = engine.collectActive();
@@ -225,15 +220,65 @@ ipcMain.handle('mail:test', async () => {
     thresholds: { hh: 100, h: 90, l: 10, ll: 0 }
   }];
   const subject = '【SupOS-monitor 测试】邮件通道测试 - ' + logger.fmtDT(new Date());
-  return await mailer.send(cfg.mail, subject, mailer.buildAlarmBody(demo));
+  const body = mailer.buildAlarmBody(demo);
+  return await mailer.send(cfg.mail, subject, body.text, body.html);
+});
+
+ipcMain.handle('mail:muteStatus', () => {
+  const cfg = config.load();
+  return {
+    ok: true,
+    imapEnabled: !!cfg.mail.imapEnabled,
+    running: mailWatcher.isRunning(),
+    busy: mailWatcher.isBusy(),
+    alertMuted: !!cfg.mail.alertMuted,
+    mutedAt: cfg.mail.mutedAt || 0,
+    mutedBy: cfg.mail.mutedBy || ''
+  };
+});
+ipcMain.handle('mail:unmute', () => {
+  const cfg = config.load();
+  cfg.mail.alertMuted = false;
+  cfg.mail.mutedAt = 0;
+  cfg.mail.mutedBy = '';
+  config.save(cfg);
+  logger.log('【手动】恢复邮件报警');
+  return { ok: true };
+});
+ipcMain.handle('mail:checkNow', async () => {
+  const start = Date.now();
+  while (mailWatcher.isBusy() && Date.now() - start < 90000){
+    await new Promise(r => setTimeout(r, 300));
+  }
+  const r = await mailWatcher.checkOnce();
+  return r || { ok: true };
 });
 
 ipcMain.handle('devices:save', (_e, devices) => {
   const cfg = config.load();
   cfg.devices = devices;
   config.save(cfg);
-  logger.log('装置分类已保存（' + devices.length + ' 个）');
   return { ok: true };
+});
+
+ipcMain.handle('device:pause', (_e, { device, minutes }) => {
+  const cfg = config.load();
+  if (!cfg.devicePause) cfg.devicePause = {};
+  cfg.devicePause[device] = minutes ? Date.now() + minutes * 60000 : 0;
+  config.save(cfg);
+  return { ok: true };
+});
+ipcMain.handle('device:resume', (_e, device) => {
+  const cfg = config.load();
+  if (cfg.devicePause && cfg.devicePause[device] !== undefined){
+    delete cfg.devicePause[device];
+    config.save(cfg);
+  }
+  return { ok: true };
+});
+ipcMain.handle('device:pauseList', () => {
+  const cfg = config.load();
+  return { ok: true, list: cfg.devicePause || {} };
 });
 
 ipcMain.handle('autostart:set', (_e, on) => {
@@ -241,7 +286,6 @@ ipcMain.handle('autostart:set', (_e, on) => {
   const cfg = config.load();
   cfg.autoStart = !!on;
   config.save(cfg);
-  logger.log('开机自启：' + (on ? '开' : '关'));
   return { ok: true };
 });
 ipcMain.handle('autostart:get', () => app.getLoginItemSettings().openAtLogin);
@@ -251,7 +295,7 @@ ipcMain.handle('monitor:resume', () => { engine.resume(); return { paused: false
 ipcMain.handle('monitor:isPaused', () => engine.isPaused());
 
 ipcMain.handle('log:read', () => logger.read());
-ipcMain.handle('log:clear', () => { logger.clear(); logger.log('日志已清空'); return { ok: true }; });
+ipcMain.handle('log:clear', () => { logger.clear(); return { ok: true }; });
 
 ipcMain.handle('meta:fetch', async () => {
   const cfg = config.load();
@@ -286,10 +330,8 @@ ipcMain.handle('meta:fetch', async () => {
       }
     });
     tags.save(cur);
-    logger.log('元数据拉取完成，更新 ' + filled + ' 个字段');
     return { ok: true, filled };
   } catch (e) {
-    logger.log('元数据拉取失败：' + e.message, 'ERROR');
     return { ok: false, error: e.message };
   }
 });
@@ -306,18 +348,13 @@ ipcMain.handle('canvas:save', (_e, rules) => {
   return { ok: true };
 });
 
-// ---- 三期：配置导入/导出 ----
 ipcMain.handle('config:export', () => configIO.exportConfig());
 ipcMain.handle('config:import', async () => {
   const r = await configIO.importConfig();
-  if (r.ok){
-    // 提示渲染进程刷新
-    sendToMain('config:reloaded', {});
-  }
+  if (r.ok) sendToMain('config:reloaded', {});
   return r;
 });
 
-// ---- 三期：检查更新 ----
 ipcMain.handle('update:check', async () => {
   updater.checkManual((txt) => sendToMain('update:status', { text: txt }));
   return { ok: true };
@@ -334,16 +371,12 @@ ipcMain.handle('alert:detail', () => engine.collectActive());
 
 const startHidden = process.argv.includes('--hidden');
 
-// ============================================================
-// app lifecycle
-// ============================================================
 app.on('second-instance', () => {
   if (mainWin) { mainWin.show(); mainWin.focus(); }
 });
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
-
   logger.log('======== SupOS-monitor v1.0.0 启动 ========');
   logger.log('配置目录：' + config.getDir());
 
@@ -351,6 +384,7 @@ app.whenReady().then(() => {
     getPoints:  () => tags.load().points,
     getDevices: () => config.load().devices,
     getCanvasRules: () => config.load().canvasRules,
+    getDevicePause: () => config.load().devicePause || {},
     onAlarm
   });
   engine.start();
@@ -368,10 +402,12 @@ app.whenReady().then(() => {
 
   trimTimer = setInterval(() => logger.trim(), 30 * 60 * 1000);
 
-  // 初始化更新器（后台）
-  updater.init({
-    onStatus: txt => sendToMain('update:status', { text: txt })
-  });
+  const cfg = config.load();
+  if (cfg.mail.enabled && cfg.mail.imapEnabled && cfg.mail.from && cfg.mail.pass){
+    mailWatcher.start();
+  }
+
+  updater.init({ onStatus: txt => sendToMain('update:status', { text: txt }) });
   updater.autoCheckLater();
 
   startAll();
@@ -385,6 +421,7 @@ app.on('before-quit', () => {
   if (engine) engine.stop();
   if (refreshTimer) clearInterval(refreshTimer);
   if (trimTimer) clearInterval(trimTimer);
+  try { mailWatcher.stop(); } catch(_) {}
   tray.destroy();
   logger.trim();
 });
