@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（形如 1.0.1），写入 package.json 并作为 Release 版本'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,11 +21,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $v = '${{ inputs.version }}'.Trim()
+          } else {
+            $v = '${{ github.ref_name }}' -replace '^v', ''
+          }
+          if ($v -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Error "非法版本号: $v （需形如 1.0.1）"
+            exit 1
+          }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Sync package.json version
+        shell: pwsh
+        run: npm version ${{ steps.ver.outputs.value }} --no-git-tag-version --allow-same-version
 
       - name: Install dependencies
         run: npm ci || npm install
@@ -27,4 +54,4 @@ jobs:
       - name: Build & Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run pack -- --publish always
+        run: npm run release
