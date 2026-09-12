@@ -8,8 +8,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-Windows-blue" alt="platform">
-  <img src="https://img.shields.io/badge/electron-v31-brightgreen" alt="electron">
-  <img src="https://img.shields.io/badge/node-%3E%3D18-green" alt="node">
+  <img src="https://img.shields.io/badge/electron-v44-brightgreen" alt="electron">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-green" alt="node">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="license">
 </p>
 
@@ -69,8 +69,8 @@
 
 | 项 | 说明 |
 |---|---|
-| 运行时 | Electron 31 |
-| 主进程 | Node.js 20（HTTP / WS / IMAP / SMTP / 规则引擎） |
+| 运行时 | Electron 44 |
+| 主进程 | Node.js 24（HTTP / WS / IMAP / SMTP / 规则引擎） |
 | 渲染进程 | 原生 HTML / CSS / JavaScript（无框架） |
 | 通信 | contextBridge + IPC |
 | 打包 | electron-builder（zip / nsis） |
@@ -87,8 +87,7 @@ SupOS-monitor/
 ├─ README.md
 ├─ build/
 │  └─ icon.ico                    # 托盘 + 应用图标（256×256）
-├─ scripts/
-│  └─ before-pack-check.js        # 打包前校验敏感残留（可选）
+├─ scripts/                       # 预留脚本目录（当前为空）
 └─ src/
    ├─ main/                       # 主进程
    │  ├─ index.js                 # 入口：窗口 / 托盘 / IPC
@@ -107,8 +106,7 @@ SupOS-monitor/
    │  ├─ config-io.js             # 配置导出/导入
    │  └─ updater.js               # 自动更新
    ├─ preload/
-   │  ├─ main.js                  # 主窗口 IPC 桥
-   │  └─ alert.js                 # 报警窗口 IPC 桥
+   │  └─ main.js                  # 主窗口 IPC 桥
    └─ renderer/
       ├─ main/
       │  ├─ index.html            # 主窗口
@@ -116,9 +114,8 @@ SupOS-monitor/
       │  ├─ app.js                # 页面逻辑
       │  └─ canvas.js             # 画布编辑器
       └─ alert/
-         ├─ index.html            # 报警弹窗
-         ├─ alert.css
-         └─ alert.js
+         ├─ index.html            # 报警弹窗（渲染逻辑内联在本文件的 <script> 中）
+         └─ alert.css
 ```
 
 ---
@@ -127,7 +124,7 @@ SupOS-monitor/
 
 ### 前置条件
 
-- Node.js ≥ 18
+- Node.js ≥ 20
 - Windows 10 及以上
 
 ### 开发运行
@@ -188,6 +185,10 @@ npm run pack
 5. Publish release
 
 用户端会在启动 30 秒后自动检查更新。
+
+> **CI 自动发布**：推送形如 `v1.0.1` 的 tag 后，`.github/workflows/release.yml` 会在
+> `windows-latest` 上自动执行 `npm run pack -- --publish always`，构建并发布到 Releases，
+> 无需手动上传 zip。
 
 ---
 
@@ -284,7 +285,7 @@ RulesEngine（主进程）
 
 ## 已知限制
 
-- 密码明文存储于 `%APPDATA%`，虽然 DPAPI 加密但换用户后不可用
+- 密码以 DPAPI 密文存储于 `%APPDATA%`，绑定当前 Windows 用户，换用户或换机器后无法解密，需重新填写
 - 画布变量是内存运行时，重启后恢复初始值
 - 邮件指令仅支持 QQ 邮箱 IMAP
 - 平台 `X-Supos-Client` 头暂未加，如遇登录失败需从前端抓包补齐
