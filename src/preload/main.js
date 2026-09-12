@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   importExcel:()    => ipcRenderer.invoke('tags:importExcel'),
   fetchMeta:  ()    => ipcRenderer.invoke('meta:fetch'),
   testRule:   (o)   => ipcRenderer.invoke('rule:test', o),
+  testCanvas: (o)   => ipcRenderer.invoke('rule:testCanvas', o),
   saveLiveOrder: (order) => ipcRenderer.invoke('tags:saveLiveOrder', order),
 
   // 环境变量

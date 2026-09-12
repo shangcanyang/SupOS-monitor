@@ -198,6 +198,19 @@ function bindTagPicker(input, node){
 // ============================================================
 // 规则下拉 / 属性框
 // ============================================================
+// 冷却分钟：允许 0（0 = 条件成立只提醒一次），非法输入回退默认 10
+function cdText(v){
+  if (v === null || v === undefined || v === '') return 10;
+  const n = Number(v);
+  return (isNaN(n) || n < 0) ? 10 : n;
+}
+function cdInput(v){
+  const s = String(v == null ? '' : v).trim();
+  if (s === '') return 10;
+  const n = Number(s);
+  return (isNaN(n) || n < 0) ? 10 : n;
+}
+
 function renderRuleSelect(){
   const sel = document.getElementById('canvasRuleSelect');
   sel.innerHTML = CS.rules.map(r =>
@@ -219,9 +232,9 @@ function renderProps(rule){
       '<option value="latch"' + (hold === 'latch' ? ' selected' : '') + '>保持到人工确认</option>' +
     '</select>' +
     '<label>保持(s)</label><input type="number" id="crHoldSec" value="' + (rule.holdSeconds || 0) + '" min="0">' +
-    '<label>冷却(min)</label><input type="number" id="crCd" value="' + (rule.cooldown || 10) + '" min="1">' +
+    '<label>冷却(min)</label><input type="number" id="crCd" value="' + cdText(rule.cooldown) + '" min="0">' +
     '<label><input type="checkbox" id="crEn"' + (rule.enabled ? ' checked' : '') + '> 启用</label>' +
-    '<div class="n-tip">冷却=条件持续成立时的重复提醒间隔。保持到人工确认需在报警弹窗点「确认复位」。</div>';
+    '<div class="n-tip">冷却=条件持续成立时的重复提醒间隔，填 0 表示只提醒一次（不再重复）。保持到人工确认需在报警弹窗点「确认复位」。</div>';
   document.getElementById('crName').addEventListener('change', e => {
     rule.name = e.target.value.trim() || rule.name;
     renderRuleSelect();
@@ -236,7 +249,7 @@ function renderProps(rule){
     rule.holdSeconds = Number(e.target.value) || 0;
   });
   document.getElementById('crCd').addEventListener('change', e => {
-    rule.cooldown = Number(e.target.value) || 10;
+    rule.cooldown = cdInput(e.target.value);
   });
   document.getElementById('crEn').addEventListener('change', e => {
     rule.enabled = e.target.checked;
@@ -256,7 +269,7 @@ function syncPropsToRule(){
   const hs = document.getElementById('crHoldSec');
   if (hs) rule.holdSeconds = Number(hs.value) || 0;
   const c = document.getElementById('crCd');
-  if (c) rule.cooldown = Number(c.value) || 10;
+  if (c) rule.cooldown = cdInput(c.value);
   const e = document.getElementById('crEn');
   if (e) rule.enabled = e.checked;
 }

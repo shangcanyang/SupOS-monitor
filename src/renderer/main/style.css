@@ -435,3 +435,23 @@ tr.alarm-row td{background:#fef2f2}
 #varTable .var-del{
   padding:2px 7px;background:#dc2626;border-color:#dc2626;color:#fff;
 }
+
+/* ============================================================
+   实时点位页直接增改：卡片限值行 / 弹框表单行
+   ============================================================ */
+.toolbar .sep{width:1px;height:18px;background:#e2e8f0;display:inline-block;margin:0 6px;vertical-align:middle}
+.pc-range{font-size:10px;color:#94a3b8;font-family:Consolas,Menlo,monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pc-range b{color:#64748b;font-weight:600}
+.adj-grid{display:flex;flex-direction:column;gap:8px}
+.adj-row{display:flex;align-items:center;gap:8px}
+.adj-row>label{flex:0 0 76px;color:#475569;font-size:12px;text-align:right}
+.adj-row input[type=text],.adj-row input[type=number],.adj-row select{
+  flex:1;min-width:0;font-size:13px;padding:6px 10px;border:1px solid #cbd5e1;
+  border-radius:4px;box-sizing:border-box;font-family:Consolas,Menlo,monospace}
+.adj-row input:disabled{background:#f1f5f9;color:#64748b}
+.adj-row input:focus,.adj-row select:focus{outline:none;border-color:#2563eb}
+#devList .dev-row{margin-bottom:6px}
+/* 通用弹框（输入/提示/确认）需盖在点位、装置等编辑弹框之上 */
+#inputModal,#msgModal,#confirmModal{z-index:10050}
+.adj-row>label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+

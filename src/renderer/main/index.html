@@ -21,8 +21,6 @@
 
   <div id="tabs">
     <div class="tab active" data-t="live">实时点位</div>
-    <div class="tab" data-t="rule">规则配置</div>
-    <div class="tab" data-t="dev">装置分类</div>
     <div class="tab" data-t="canvas">高级规则</div>
     <div class="tab" data-t="vars">环境变量</div>
     <div class="tab" data-t="mail">邮件设置</div>
@@ -32,62 +30,22 @@
   <div id="pages">
     <div class="page active" id="page-live">
       <div class="toolbar">
+        <button id="btnAddTag" class="primary">＋ 添加位号</button>
+        <button id="btnImportTags">粘贴导入</button>
+        <button id="btnImportExcel">Excel 导入</button>
+        <button id="btnDevMgr">装置分类</button>
+        <button id="btnTestRule">规则测试</button>
+        <button id="btnFetchMeta">拉取描述/单位</button>
+        <span class="sep"></span>
         <button id="btnLiveRefresh">刷新列表</button>
         <button id="btnLiveExpandAll">全部展开</button>
         <button id="btnLiveCollapseAll">全部折叠</button>
         <span id="liveCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
-        <span style="color:#94a3b8;font-size:11px;margin-left:12px;">
-          提示：拖动卡片可在同装置内排序，顺序自动保存
-        </span>
+      </div>
+      <div style="color:#94a3b8;font-size:11px;margin-bottom:8px;">
+        提示：点击卡片可直接修改描述与上下限报警值；拖动卡片可在同装置内排序，顺序自动保存
       </div>
       <div id="liveGroups"></div>
-    </div>
-
-    <div class="page" id="page-rule">
-      <div class="toolbar">
-        <button id="btnAddTag" class="primary">＋ 添加位号</button>
-        <button id="btnImportTags">粘贴导入</button>
-        <button id="btnImportExcel">Excel 导入</button>
-        <button id="btnReloadRules">刷新</button>
-        <button id="btnTestRule">规则测试</button>
-        <button id="btnSaveRules" class="primary">保存规则</button>
-        <button id="btnFetchMeta">拉取描述/单位</button>
-        <span id="ruleCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
-      </div>
-      <table id="ruleTable">
-        <thead>
-          <tr>
-            <th style="width:16%">位号</th>
-            <th style="width:13%">描述</th>
-            <th style="width:8%">HH</th>
-            <th style="width:8%">H</th>
-            <th style="width:8%">L</th>
-            <th style="width:8%">LL</th>
-            <th style="width:7%">持续(s)</th>
-            <th style="width:7%">冷却(min)</th>
-            <th style="width:6%">启用</th>
-            <th style="width:6%">单位</th>
-            <th style="width:8%">装置</th>
-            <th style="width:5%"></th>
-          </tr>
-        </thead>
-        <tbody id="ruleBody"></tbody>
-      </table>
-    </div>
-
-    <div class="page" id="page-dev">
-      <div class="panel" style="max-width:760px;">
-        <h3>装置分类规则</h3>
-        <div style="color:#64748b;font-size:12px;line-height:1.7;">
-          按位号是否包含指定关键字自动归类。关键字不区分大小写；从上到下依次匹配，命中第一个即停下。
-        </div>
-        <div class="toolbar" style="margin-top:10px">
-          <button id="btnDevAdd" class="primary">＋ 添加规则</button>
-          <button id="btnDevSave" class="primary">保存</button>
-          <span id="devStat" style="color:#94a3b8;font-size:12px;margin-left:8px"></span>
-        </div>
-        <div id="devList"></div>
-      </div>
     </div>
 
     <div class="page" id="page-canvas">
@@ -327,20 +285,34 @@
 
 <!-- 规则测试弹框 -->
 <div id="testModal" class="modal-ov" style="display:none;">
-  <div class="modal-box" style="width:520px;">
+  <div class="modal-box" style="width:560px;">
     <h3>规则测试</h3>
-    <div class="mhint">输入一个位号和一个模拟值，查看判断结果。</div>
+    <div class="mhint">只做一次离线判断，不写入真实数据：点位规则看阈值分级，高级规则看画布逻辑是否触发。</div>
     <div class="adj-grid">
       <div class="adj-row">
-        <label>位号</label>
-        <select id="testTag" style="flex:1;font-family:Consolas,monospace;
-          font-size:13px;padding:6px 10px;border:1px solid #cbd5e1;border-radius:4px"></select>
+        <label>测试对象</label>
+        <select id="testKind">
+          <option value="point">点位规则（阈值分级）</option>
+          <option value="canvas">高级规则（画布逻辑）</option>
+        </select>
       </div>
-      <div class="adj-row">
-        <label>模拟值</label>
-        <input type="text" id="testValue" placeholder="例如 105.5"
-          style="flex:1;font-family:Consolas,monospace;font-size:13px;
-          padding:6px 10px;border:1px solid #cbd5e1;border-radius:4px">
+      <div id="testPointBox">
+        <div class="adj-row">
+          <label>位号</label>
+          <select id="testTag"></select>
+        </div>
+        <div class="adj-row">
+          <label>模拟值</label>
+          <input type="text" id="testValue" placeholder="例如 105.5">
+        </div>
+      </div>
+      <div id="testCanvasBox" style="display:none">
+        <div class="adj-row">
+          <label>规则</label>
+          <select id="testCanvasRule"></select>
+        </div>
+        <div id="testCanvasInputs" style="margin-top:8px"></div>
+        <div class="mhint" style="margin:6px 0 0">留空表示按当前实时值 / 变量当前值参与判断。</div>
       </div>
     </div>
     <div id="testResult" style="margin-top:12px;padding:12px;background:#f8fafc;
@@ -349,6 +321,59 @@
     <div class="modal-foot">
       <button id="testCancel">关闭</button>
       <button id="testRun" class="primary">测试</button>
+    </div>
+  </div>
+</div>
+
+<!-- 点位编辑弹框 -->
+<div id="pointModal" class="modal-ov" style="display:none;">
+  <div class="modal-box" style="width:560px;">
+    <h3 id="pointModalTitle">编辑位号</h3>
+    <div class="mhint" id="pointModalTag"></div>
+    <div class="adj-grid">
+      <div class="adj-row"><label>位号</label><input type="text" id="ptTag" placeholder="如 HCY_TI_710A44_PV"></div>
+      <div class="adj-row"><label>描述</label><input type="text" id="ptDesc"></div>
+      <div class="adj-row"><label>单位</label><input type="text" id="ptUnit" placeholder="如 ℃ / MPa"></div>
+      <div class="adj-row"><label>HH</label><input type="text" id="ptHH" placeholder="空 = 不限"></div>
+      <div class="adj-row"><label>H</label><input type="text" id="ptH" placeholder="空 = 不限"></div>
+      <div class="adj-row"><label>L</label><input type="text" id="ptL" placeholder="空 = 不限"></div>
+      <div class="adj-row"><label>LL</label><input type="text" id="ptLL" placeholder="空 = 不限"></div>
+      <div class="adj-row"><label>持续(s)</label><input type="text" id="ptDur" placeholder="0"></div>
+      <div class="adj-row"><label>冷却(min)</label><input type="text" id="ptCd" placeholder="0 = 只提醒一次"></div>
+      <div class="adj-row"><label>启用</label>
+        <input type="checkbox" id="ptEnabled" style="flex:0 0 auto;width:auto">
+        <span style="flex:1"></span>
+      </div>
+      <div class="adj-row"><label>所属装置</label>
+        <span id="ptDev" style="flex:1;font-size:12px;color:#475569"></span>
+      </div>
+    </div>
+    <div class="modal-foot" style="justify-content:space-between">
+      <span>
+        <button id="ptPause" style="background:#f59e0b;border-color:#f59e0b;color:#fff">暂停该装置报警</button>
+        <button id="ptDelete" style="background:#dc2626;border-color:#dc2626;color:#fff">删除位号</button>
+      </span>
+      <span>
+        <button id="ptCancel">取消</button>
+        <button id="ptSave" class="primary">保存</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- 装置分类弹框 -->
+<div id="devModal" class="modal-ov" style="display:none;">
+  <div class="modal-box" style="width:700px;">
+    <h3>装置分类规则</h3>
+    <div class="mhint">按位号是否包含指定关键字自动归类，关键字不区分大小写；从上到下依次匹配，命中第一个即停下。</div>
+    <div class="toolbar">
+      <button id="btnDevAdd" class="primary">＋ 添加规则</button>
+      <span id="devStat" style="color:#94a3b8;font-size:12px;margin-left:8px"></span>
+    </div>
+    <div id="devList" style="max-height:50vh;overflow:auto"></div>
+    <div class="modal-foot">
+      <button id="devCancel">取消</button>
+      <button id="btnDevSave" class="primary">保存</button>
     </div>
   </div>
 </div>

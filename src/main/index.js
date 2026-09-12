@@ -14,6 +14,7 @@ const mailWatcher = require('./mail-watcher');
 const alertWindow = require('./alert-window');
 const tray = require('./tray');
 const configIO = require('./config-io');
+const canvasEngine = require('./canvas-engine');
 const updater = require('./updater');
 
 const gotLock = app.requestSingleInstanceLock();
@@ -193,7 +194,7 @@ ipcMain.handle('rule:test', (_e, { tag, value }) => {
     level: level || null,
     thresholds: { hh: t.hh, h: t.h, l: t.l, ll: t.ll, temp: t.temp },
     duration: p.duration || 0,
-    cooldown: p.cooldown || 10,
+    cooldown: (p.cooldown === 0 || p.cooldown === '0') ? 0 : (p.cooldown || 10),
     inAlarm: !!rt.inAlarm,
     cooldownUntil: rt.cooldownUntil || 0
   };
@@ -346,6 +347,65 @@ ipcMain.handle('canvas:save', (_e, rules) => {
   config.save(cfg);
   logger.log('画布规则已保存（' + cfg.canvasRules.length + ' 个）');
   return { ok: true };
+});
+
+ipcMain.handle('rule:testCanvas', (_e, { ruleId, tagValues, varValues }) => {
+  const cfg = config.load();
+  const rule = (cfg.canvasRules || []).find(r => r.id === ruleId);
+  if (!rule) return { ok: false, error: '规则不存在：' + ruleId };
+
+  // 以当前运行时为底，叠加测试输入
+  const runtime = {};
+  const rtAll = engine.rt || {};
+  for (const tag in rtAll){
+    const rt = rtAll[tag] || {};
+    runtime[tag] = { value: rt.value, status: rt.status, ts: rt.ts, lastUpdate: rt.lastUpdate };
+  }
+  const tv = tagValues || {};
+  for (const tag in tv){
+    const cur = runtime[tag] || { value: null, status: '0' };
+    const raw = tv[tag];
+    let v;
+    if (raw === '' || raw === null || raw === undefined) v = null;
+    else v = isNaN(Number(raw)) ? raw : Number(raw);
+    runtime[tag] = {
+      value: v,
+      status: (cur.status === null || cur.status === undefined) ? '0' : cur.status,
+      ts: cur.ts || Date.now(),
+      lastUpdate: cur.lastUpdate || Date.now()
+    };
+  }
+
+  const vars = Object.assign({}, engine.canvasVars || {});
+  const vv = varValues || {};
+  for (const k in vv){
+    const raw = vv[k];
+    if (raw === '' || raw === null || raw === undefined) continue;
+    const n = Number(raw);
+    vars[k] = isNaN(n) ? raw : n;
+  }
+
+  // 在节点状态副本上清空该规则记忆，避免测试污染正在运行的规则
+  let nodeState;
+  try { nodeState = JSON.parse(JSON.stringify(engine.canvasNodeState || {})); }
+  catch (e) { nodeState = {}; }
+  canvasEngine.resetRuleState(rule, nodeState);
+
+  let res;
+  try { res = canvasEngine.evalRule(rule, { runtime, vars, nodeState, now: Date.now() }); }
+  catch (e) { return { ok: false, error: '求值异常：' + e.message }; }
+
+  return {
+    ok: true,
+    ruleId: rule.id,
+    name: rule.name || '',
+    enabled: rule.enabled !== false,
+    duration: rule.duration || 0,
+    hold: rule.hold || 'auto',
+    cooldown: (rule.cooldown === 0 || rule.cooldown === '0') ? 0 : (rule.cooldown || 10),
+    active: !!res.active,
+    triggerId: res.triggerId || null
+  };
 });
 
 ipcMain.handle('config:export', () => configIO.exportConfig());

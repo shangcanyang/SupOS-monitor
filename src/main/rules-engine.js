@@ -3,6 +3,14 @@ const canvasEngine = require('./canvas-engine');
 const canvasState = require('./canvas-state');
 const varsMod = require('./vars');
 
+// 冷却分钟规范化：空/非法 → 默认值；0 表示「只提醒一次，冷却期内不重复」
+function normCooldown(v, dflt){
+  if (v === null || v === undefined || v === '') return dflt;
+  const n = Number(v);
+  if (isNaN(n) || n < 0) return dflt;
+  return n;
+}
+
 class RulesEngine {
   constructor({ getPoints, getDevices, getCanvasRules, getDevicePause, onAlarm }){
     this.getPoints = getPoints;
@@ -182,13 +190,15 @@ class RulesEngine {
       }
       if (now - rt.pendingSince < durMs) continue;
 
+      const cdMin = normCooldown(p.cooldown, 10);
       if (!rt.cooldownUntil){
         rt.inAlarm = true; rt.level = lvl;
-        rt.cooldownUntil = now + (p.cooldown || 10) * 60000;
+        // 冷却 0：只提醒一次，条件持续成立也不再重复
+        rt.cooldownUntil = cdMin > 0 ? now + cdMin * 60000 : -1;
         this.fire(p, rt, lvl, '首次');
-      } else if (now >= rt.cooldownUntil){
+      } else if (rt.cooldownUntil > 0 && now >= rt.cooldownUntil){
         rt.inAlarm = true; rt.level = lvl;
-        rt.cooldownUntil = now + (p.cooldown || 10) * 60000;
+        rt.cooldownUntil = now + cdMin * 60000;
         this.fire(p, rt, lvl, '冷却到期');
       }
     }
@@ -247,7 +257,8 @@ class RulesEngine {
 
       const hold = rule.hold || 'auto';                                       // auto | timed | latch
       const holdMs = Math.max(0, Number(rule.holdSeconds) || 0) * 1000;
-      const cooldownMs = Math.max(0, Number(rule.cooldown) || 0) * 60000;
+      const cdMin = normCooldown(rule.cooldown, 10);
+      const cooldownMs = cdMin * 60000;
 
       if (res.active){
         cr.recoveredAt = 0;
@@ -264,11 +275,12 @@ class RulesEngine {
         if (!cr.cooldownUntil){
           cr.inAlarm = true;
           cr.acked = false;
-          cr.cooldownUntil = now + cooldownMs;
+          // 冷却 0：只提醒一次
+          cr.cooldownUntil = cooldownMs > 0 ? now + cooldownMs : -1;
           cr.lastFire = now;
           logger.log('画布规则触发 [首次] ' + (rule.name || rule.id));
           this.onAlarm();
-        } else if (now >= cr.cooldownUntil){
+        } else if (cr.cooldownUntil > 0 && now >= cr.cooldownUntil){
           cr.inAlarm = true;
           cr.acked = false;
           cr.cooldownUntil = now + cooldownMs;
@@ -326,7 +338,9 @@ class RulesEngine {
     // 清空该规则内节点的记忆状态，避免节点级锁存导致确认后立即回弹
     canvasEngine.resetRuleState(rule, this.canvasNodeState);
     // 确认后重新计冷却，避免条件仍成立时立刻再次弹出
-    cr.cooldownUntil = now + Math.max(0, Number(rule && rule.cooldown) || 0) * 60000;
+    const ackCd = normCooldown(rule && rule.cooldown, 10);
+    // 冷却 0：确认后本轮不再重复提醒，直到条件恢复、下次越限才重新提醒
+    cr.cooldownUntil = ackCd > 0 ? now + ackCd * 60000 : -1;
     logger.log('画布规则人工确认复位：' + ((rule && rule.name) || ruleId));
     return { ok: true };
   }
