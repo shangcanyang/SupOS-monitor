@@ -123,6 +123,21 @@ function render(items){
 
   box.innerHTML = currentItems.map(function(it, i){
     var t = it.thresholds || {};
+    var thsHtml = it.isCanvasRule
+      ? '<div class="ths">画布规则：<b>' + esc(it.ruleId || '-') + '</b>' +
+        ((it.canvasHold === 'latch' && !it.acked) ? '　<b style="color:#dc2626">需确认复位</b>' : '') +
+        '</div>'
+      : '<div class="ths">' +
+          '<b>HH</b>=' + fmtTh(t.hh) + '　' +
+          '<b>H</b>='  + fmtTh(t.h)  + '　' +
+          '<b>L</b>='  + fmtTh(t.l)  + '　' +
+          '<b>LL</b>=' + fmtTh(t.ll) +
+        '</div>';
+    var actsHtml = '<div class="acts">' +
+      (it.isCanvasRule
+        ? '<button data-ack="' + i + '" class="primary">✓ 确认复位</button>'
+        : '<button data-adj="' + i + '">⚙ 临时调整设定值</button>') +
+      '</div>';
     return '<div class="item ' + esc(it.level) + '">' +
       '<div class="hd">' +
         '<span class="lv ' + esc(it.level) + '">' + esc(it.level) + '</span>' +
@@ -136,15 +151,8 @@ function render(items){
         (it.unit ? '<span class="val-u">' + esc(it.unit) + '</span>' : '') +
         (it.isTemp ? '<span class="temp">临时设定值生效中</span>' : '') +
       '</div>' +
-      '<div class="ths">' +
-        '<b>HH</b>=' + fmtTh(t.hh) + '　' +
-        '<b>H</b>='  + fmtTh(t.h)  + '　' +
-        '<b>L</b>='  + fmtTh(t.l)  + '　' +
-        '<b>LL</b>=' + fmtTh(t.ll) +
-      '</div>' +
-      '<div class="acts">' +
-        '<button data-adj="' + i + '">⚙ 临时调整设定值</button>' +
-      '</div>' +
+      thsHtml +
+      actsHtml +
     '</div>';
   }).join('');
 
@@ -153,6 +161,19 @@ function render(items){
     btns[k].addEventListener('click', (function(idx){
       return function(){ openAdjust(idx); };
     })(Number(btns[k].getAttribute('data-adj'))));
+  }
+
+  var acks = box.querySelectorAll('[data-ack]');
+  for (var m = 0; m < acks.length; m++){
+    acks[m].addEventListener('click', (function(idx){
+      return function(){
+        var it = currentItems[idx];
+        if (!it || !ipcRenderer) return;
+        ipcRenderer.invoke('alert:ack', it.ruleId).then(function(){
+          ipcRenderer.invoke('alert:detail').then(render);
+        });
+      };
+    })(Number(acks[m].getAttribute('data-ack'))));
   }
 }
 

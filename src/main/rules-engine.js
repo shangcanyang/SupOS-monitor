@@ -1,5 +1,6 @@
 const logger = require('./logger');
 const canvasEngine = require('./canvas-engine');
+const canvasState = require('./canvas-state');
 const varsMod = require('./vars');
 
 class RulesEngine {
@@ -12,8 +13,13 @@ class RulesEngine {
     this.rt = {};
     this.pausedUntil = 0;
     this.timer = null;
-    this.canvasVars = {};
-    this.canvasNodeState = {};
+
+    // 变量运行时值与节点状态从磁盘恢复，保证画布规则跨重启继续跑
+    const saved = canvasState.load();
+    this.canvasVars = saved.vars || {};
+    this.canvasNodeState = saved.nodes || {};
+    this._persistAt = 0;
+    this._persistSig = canvasState.signature(this.canvasVars, this.canvasNodeState);
   }
 
   getRT(tag){
@@ -208,7 +214,10 @@ class RulesEngine {
     } catch (e) {}
 
     const rules = this.getCanvasRules ? this.getCanvasRules() : [];
-    if (!rules || !rules.length) return;
+    if (!rules || !rules.length){
+      this.persistCanvasState(now);
+      return;
+    }
 
     const runtime = {};
     for (const tag in this.rt){
@@ -225,7 +234,10 @@ class RulesEngine {
       if (!rule.enabled) continue;
       const rid = '_cr_' + rule.id;
       if (!this.rt[rid]){
-        this.rt[rid] = { active: false, since: 0, cooldownUntil: 0, inAlarm: false };
+        this.rt[rid] = {
+          active: false, since: 0, cooldownUntil: 0, inAlarm: false,
+          recoveredAt: 0, acked: false, lastFire: 0
+        };
       }
       const cr = this.rt[rid];
 
@@ -233,31 +245,100 @@ class RulesEngine {
       try { res = canvasEngine.evalRule(rule, state); }
       catch (e) { res = { active: false }; }
 
-      if (!res.active){
-        cr.since = 0;
-        if (cr.cooldownUntil && now >= cr.cooldownUntil){
-          cr.cooldownUntil = 0;
-          cr.inAlarm = false;
+      const hold = rule.hold || 'auto';                                       // auto | timed | latch
+      const holdMs = Math.max(0, Number(rule.holdSeconds) || 0) * 1000;
+      const cooldownMs = Math.max(0, Number(rule.cooldown) || 0) * 60000;
+
+      if (res.active){
+        cr.recoveredAt = 0;
+        if (!cr.since) cr.since = now;
+        const durMs = (rule.duration || 0) * 1000;
+        if (now - cr.since < durMs) continue;
+
+        // 保持模式且已人工确认：条件仍未恢复时只维持报警显示，不重复推送/弹窗
+        if (hold === 'latch' && cr.acked){
+          cr.inAlarm = true;
+          continue;
         }
-        continue;
-      }
 
-      if (!cr.since) cr.since = now;
-      const durMs = (rule.duration || 0) * 1000;
-      if (now - cr.since < durMs) continue;
-
-      if (!cr.cooldownUntil){
-        cr.inAlarm = true;
-        cr.cooldownUntil = now + (rule.cooldown || 10) * 60000;
-        logger.log('画布规则触发 [首次] ' + rule.name);
-        this.onAlarm();
-      } else if (now >= cr.cooldownUntil){
-        cr.inAlarm = true;
-        cr.cooldownUntil = now + (rule.cooldown || 10) * 60000;
-        logger.log('画布规则触发 [冷却到期] ' + rule.name);
-        this.onAlarm();
+        if (!cr.cooldownUntil){
+          cr.inAlarm = true;
+          cr.acked = false;
+          cr.cooldownUntil = now + cooldownMs;
+          cr.lastFire = now;
+          logger.log('画布规则触发 [首次] ' + (rule.name || rule.id));
+          this.onAlarm();
+        } else if (now >= cr.cooldownUntil){
+          cr.inAlarm = true;
+          cr.acked = false;
+          cr.cooldownUntil = now + cooldownMs;
+          cr.lastFire = now;
+          logger.log('画布规则触发 [冷却到期] ' + (rule.name || rule.id));
+          this.onAlarm();
+        }
+        // 冷却期内条件持续成立：报警保持显示，但不重复推送，等待冷却到期再提醒
+      } else {
+        cr.since = 0;
+        if (cr.inAlarm){
+          if (hold === 'latch'){
+            // 保持模式：条件恢复也不复位，等人工确认
+            if (cr.acked){
+              cr.inAlarm = false;
+              cr.acked = false;
+              cr.cooldownUntil = 0;
+            }
+          } else if (hold === 'timed'){
+            if (!cr.recoveredAt) cr.recoveredAt = now;
+            if (now - cr.recoveredAt >= holdMs){
+              cr.inAlarm = false;
+              cr.recoveredAt = 0;
+              cr.cooldownUntil = 0;
+            }
+          } else {
+            // 自动复位：条件恢复即复位（冷却只用于重复提醒节奏）
+            cr.inAlarm = false;
+            cr.recoveredAt = 0;
+            cr.cooldownUntil = 0;
+          }
+        } else {
+          cr.recoveredAt = 0;
+          // 条件已恢复：结束本轮确认周期，下次成立视为新一次报警
+          if (cr.acked) cr.acked = false;
+          if (cr.cooldownUntil && now >= cr.cooldownUntil) cr.cooldownUntil = 0;
+        }
       }
     }
+
+    this.persistCanvasState(now);
+  }
+
+  // 人工确认复位（保持模式的画布规则）
+  ackRule(ruleId){
+    const cr = this.rt['_cr_' + ruleId];
+    if (!cr) return { ok: false, error: '规则未在运行' };
+    const rules = this.getCanvasRules ? this.getCanvasRules() : [];
+    const rule = rules.find((r) => r.id === ruleId);
+    const now = Date.now();
+    cr.inAlarm = false;
+    cr.acked = true;
+    cr.since = 0;
+    cr.recoveredAt = 0;
+    // 清空该规则内节点的记忆状态，避免节点级锁存导致确认后立即回弹
+    canvasEngine.resetRuleState(rule, this.canvasNodeState);
+    // 确认后重新计冷却，避免条件仍成立时立刻再次弹出
+    cr.cooldownUntil = now + Math.max(0, Number(rule && rule.cooldown) || 0) * 60000;
+    logger.log('画布规则人工确认复位：' + ((rule && rule.name) || ruleId));
+    return { ok: true };
+  }
+
+  // 变量值与节点状态落盘（节流 + 变化检测，避免频繁写盘）
+  persistCanvasState(now){
+    if (now - this._persistAt < 10000) return;
+    const sig = canvasState.signature(this.canvasVars, this.canvasNodeState);
+    if (sig === this._persistSig) return;
+    this._persistAt = now;
+    this._persistSig = sig;
+    canvasState.save(this.canvasVars, this.canvasNodeState);
   }
 
   fire(p, rt, lvl, reason){
@@ -291,16 +372,23 @@ class RulesEngine {
       const cr = this.rt[rid];
       if (!cr || !cr.inAlarm) continue;
       const trig = rule.nodes.find(n => n.type === 'trigger');
+      const hold = rule.hold || 'auto';
       out.push({
         tag: rule.name || '画布规则',
-        desc: '画布规则触发',
+        desc: (hold === 'latch' && !cr.acked)
+          ? '画布规则触发（保持中，需确认复位）'
+          : '画布规则触发',
         unit: '',
         value: '-',
         level: (trig && trig.level) || 'HH',
-        time: Date.now(),
+        time: cr.lastFire || cr.since || Date.now(),
         thresholds: { hh: '-', h: '-', l: '-', ll: '-' },
         isTemp: false,
-        device: '高级规则'
+        device: '高级规则',
+        isCanvasRule: true,
+        ruleId: rule.id,
+        canvasHold: hold,
+        acked: !!cr.acked
       });
     }
     return out;

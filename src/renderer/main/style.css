@@ -294,13 +294,15 @@ tr.alarm-row td{background:#fef2f2}
 /* 节点着色 */
 .cnode.type-tag .cnode-hd,
 .cnode.type-bool .cnode-hd,
-.cnode.type-tagStatus .cnode-hd{
+.cnode.type-tagStatus .cnode-hd,
+.cnode.type-constN .cnode-hd{
   background:linear-gradient(135deg,#dbeafe,#bfdbfe);
   color:#1e40af;border-bottom-color:#93c5fd}
 .cnode.type-compare .cnode-hd,
 .cnode.type-range .cnode-hd,
 .cnode.type-deviation .cnode-hd,
-.cnode.type-rate .cnode-hd{
+.cnode.type-rate .cnode-hd,
+.cnode.type-textCmp .cnode-hd{
   background:linear-gradient(135deg,#fef3c7,#fde68a);
   color:#92400e;border-bottom-color:#fcd34d}
 .cnode.type-logic .cnode-hd,
@@ -310,9 +312,23 @@ tr.alarm-row td{background:#fef2f2}
   color:#3730a3;border-bottom-color:#a5b4fc}
 .cnode.type-duration .cnode-hd,
 .cnode.type-delay .cnode-hd,
+.cnode.type-hold .cnode-hd,
+.cnode.type-pulse .cnode-hd,
 .cnode.type-timeRange .cnode-hd{
   background:linear-gradient(135deg,#cffafe,#a5f3fc);
   color:#155e75;border-bottom-color:#67e8f9}
+.cnode.type-latch .cnode-hd,
+.cnode.type-toggle .cnode-hd,
+.cnode.type-edge .cnode-hd,
+.cnode.type-counter .cnode-hd{
+  background:linear-gradient(135deg,#ede9fe,#ddd6fe);
+  color:#5b21b6;border-bottom-color:#c4b5fd}
+.cnode.type-arith .cnode-hd,
+.cnode.type-mathFn .cnode-hd,
+.cnode.type-scale .cnode-hd,
+.cnode.type-stat .cnode-hd{
+  background:linear-gradient(135deg,#ffedd5,#fed7aa);
+  color:#9a3412;border-bottom-color:#fdba74}
 .cnode.type-varGet .cnode-hd,
 .cnode.type-varSet .cnode-hd{
   background:linear-gradient(135deg,#dcfce7,#bbf7d0);

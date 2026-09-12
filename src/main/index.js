@@ -367,6 +367,11 @@ ipcMain.handle('alert:setOverride', (_e, tag, values) => {
   alertWindow.update(items);
   return { ok: true };
 });
+ipcMain.handle('alert:ack', (_e, ruleId) => {
+  const r = engine.ackRule(ruleId);
+  alertWindow.update(engine.collectActive());
+  return r;
+});
 ipcMain.handle('alert:detail', () => engine.collectActive());
 
 const startHidden = process.argv.includes('--hidden');
