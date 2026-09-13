@@ -103,13 +103,17 @@ function onAlarm(){
   if (cfg.mail.alertMuted) return;
   if (mailBufferTimer) clearTimeout(mailBufferTimer);
   mailBufferTimer = setTimeout(async () => {
-    const its = engine.collectActive();
+    mailBufferTimer = null;
+    // 自定义通知节点可以单独关闭邮箱通知：未勾选「邮箱通知」的规则不参与本次邮件
+    const all = engine.collectActive();
+    const its = all.filter(x => !x.isCanvasRule || x.mail !== false);
     if (!its.length) return;
     const freshCfg = config.load();
     if (!freshCfg.mail.enabled || freshCfg.mail.alertMuted) return;
     const subject = '【SupOS-monitor 报警】' + its.length + ' 项测点超限 - ' + logger.fmtDT(new Date());
     const body = mailer.buildAlarmBody(its);
     await mailer.send(freshCfg.mail, subject, body.text, body.html);
+    its.forEach(x => { if (x.isCanvasRule) engine.markMailSent(x.ruleId, x.lastFire); });
   }, 1500);
 }
 
@@ -395,6 +399,7 @@ ipcMain.handle('rule:testCanvas', (_e, { ruleId, tagValues, varValues }) => {
   try { res = canvasEngine.evalRule(rule, { runtime, vars, nodeState, now: Date.now() }); }
   catch (e) { return { ok: false, error: '求值异常：' + e.message }; }
 
+  const trig = (rule.nodes || []).find(n => n.type === 'trigger');
   return {
     ok: true,
     ruleId: rule.id,
@@ -402,7 +407,9 @@ ipcMain.handle('rule:testCanvas', (_e, { ruleId, tagValues, varValues }) => {
     enabled: rule.enabled !== false,
     duration: rule.duration || 0,
     hold: rule.hold || 'auto',
-    cooldown: (rule.cooldown === 0 || rule.cooldown === '0') ? 0 : (rule.cooldown || 10),
+    note: (trig && typeof trig.msg === 'string') ? trig.msg : '',
+    mail: !!(trig && trig.mail),
+    level: (trig && trig.level) || 'HH',
     active: !!res.active,
     triggerId: res.triggerId || null
   };

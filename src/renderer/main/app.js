@@ -992,7 +992,11 @@ async function runTestCanvas(){
         : '<span style="color:#16a34a">条件不成立</span>') +
     '</div>' +
     '<div style="color:#64748b;margin-top:4px">' +
-      '持续：' + r.duration + ' 秒　保持：' + esc(r.hold) + '　冷却：' + r.cooldown + ' 分钟' +
+      '持续：' + r.duration + ' 秒　保持：' + esc(r.hold) +
+      '　邮箱通知：' + (r.mail ? '开' : '关') +
+    '</div>' +
+    '<div style="color:#64748b;margin-top:4px;white-space:pre-line">' +
+      '通知内容：' + esc(r.note || '（默认文案）') +
     '</div>' +
     '<div style="color:#94a3b8;margin-top:4px">测试只做一次离线判断，不影响正在运行的报警状态。</div>';
 }

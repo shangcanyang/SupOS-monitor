@@ -11,6 +11,70 @@ function normCooldown(v, dflt){
   return n;
 }
 
+// ===== 自定义通知文案 =====
+// {time} {rule} {value} 三个占位符；用户可自行编辑通知内容，留空走默认文案
+function fmtTime(t){
+  const d = new Date(t);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+         p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+function fmtValue(v){
+  if (v === null || v === undefined) return '-';
+  if (typeof v === 'number'){
+    if (!isFinite(v)) return String(v);
+    if (Number.isInteger(v)) return String(v);
+    return String(Math.round(v * 100) / 100);
+  }
+  if (typeof v === 'boolean') return v ? '成立' : '不成立';
+  return String(v);
+}
+
+// 触发值为布尔（比较节点输出）时，退回到规则内测点的实际值，避免通知里只写「成立」
+function tagValueText(rt, rule){
+  const parts = [];
+  const nodes = (rule && rule.nodes) || [];
+  for (const n of nodes){
+    if ((n.type === 'tag' || n.type === 'tagStatus') && n.tag){
+      const r = rt && rt[n.tag];
+      if (r && r.value !== null && r.value !== undefined && r.value !== ''){
+        parts.push(n.tag + '=' + fmtValue(r.value));
+      }
+    }
+  }
+  return parts.join('，');
+}
+
+function displayValue(v, fallback){
+  if (v === null || v === undefined || typeof v === 'boolean'){
+    return fallback ? fallback : fmtValue(v);
+  }
+  return fmtValue(v);
+}
+
+// 渲染通知正文 + 拼出完整推送文本（标题/正文/时间/规则名/报警级别）
+function notifyText(rule, trig, value, now, fallback){
+  const tpl = (trig && typeof trig.msg === 'string' && trig.msg.trim())
+    ? trig.msg.trim()
+    : '【设备报警】\n规则：{rule}\n触发值：{value}\n时间：{time}';
+  const body = tpl
+    .replace(/\{rule\}/g, rule.name || rule.id || '')
+    .replace(/\{value\}/g, displayValue(value, fallback))
+    .replace(/\{time\}/g, fmtTime(now));
+  const name = (typeof rule.name === 'string' && rule.name.trim()) ? rule.name.trim() : '自定义通知';
+  const level = (trig && trig.level) || 'HH';
+  const title = '【' + level + '】' + name;
+  return {
+    name: name,
+    level: level,
+    title: title,
+    body: body,
+    plain: title + '\n' + body + '\n时间：' + fmtTime(now),
+    mail: !!(trig && trig.mail)
+  };
+}
+
 class RulesEngine {
   constructor({ getPoints, getDevices, getCanvasRules, getDevicePause, onAlarm }){
     this.getPoints = getPoints;
@@ -245,8 +309,10 @@ class RulesEngine {
       const rid = '_cr_' + rule.id;
       if (!this.rt[rid]){
         this.rt[rid] = {
-          active: false, since: 0, cooldownUntil: 0, inAlarm: false,
-          recoveredAt: 0, acked: false, lastFire: 0
+          active: false, since: 0, inAlarm: false,
+          recoveredAt: 0, acked: false, lastFire: 0,
+          lastValue: null, lastValueText: '', lastNote: '', mailRequested: false,
+          mailSent: false, mailAt: 0
         };
       }
       const cr = this.rt[rid];
@@ -255,69 +321,61 @@ class RulesEngine {
       try { res = canvasEngine.evalRule(rule, state); }
       catch (e) { res = { active: false }; }
 
+      // 报警级别 / 通知文案取自画布中的自定义通知节点（type='trigger'）
+      const trig = (rule.nodes || []).find(n => n.type === 'trigger');
+      if (Object.prototype.hasOwnProperty.call(res, 'value')) cr.lastValue = res.value;
+
       const hold = rule.hold || 'auto';                                       // auto | timed | latch
       const holdMs = Math.max(0, Number(rule.holdSeconds) || 0) * 1000;
-      const cdMin = normCooldown(rule.cooldown, 10);
-      const cooldownMs = cdMin * 60000;
 
       if (res.active){
-        cr.recoveredAt = 0;
-        if (!cr.since) cr.since = now;
         const durMs = (rule.duration || 0) * 1000;
-        if (now - cr.since < durMs) continue;
+        if (!cr.since) cr.since = now;
+        if (now - cr.since < durMs) continue;                                 // 持续时间未满，先不提醒
 
-        // 保持模式且已人工确认：条件仍未恢复时只维持报警显示，不重复推送/弹窗
-        if (hold === 'latch' && cr.acked){
-          cr.inAlarm = true;
+        // 已人工确认：条件仍成立时保持静默，不重复推送/弹窗，等条件恢复后重新计数
+        if (cr.acked){
+          cr.inAlarm = false;
           continue;
         }
 
-        if (!cr.cooldownUntil){
+        cr.recoveredAt = 0;
+
+        // 条件成立只提醒一次，无重复提醒节奏；需等条件恢复（下次越限）才重新提醒
+        if (!cr.inAlarm){
           cr.inAlarm = true;
           cr.acked = false;
-          // 冷却 0：只提醒一次
-          cr.cooldownUntil = cooldownMs > 0 ? now + cooldownMs : -1;
           cr.lastFire = now;
-          logger.log('画布规则触发 [首次] ' + (rule.name || rule.id));
-          this.onAlarm();
-        } else if (cr.cooldownUntil > 0 && now >= cr.cooldownUntil){
-          cr.inAlarm = true;
-          cr.acked = false;
-          cr.cooldownUntil = now + cooldownMs;
-          cr.lastFire = now;
-          logger.log('画布规则触发 [冷却到期] ' + (rule.name || rule.id));
+          const vTxt = tagValueText(this.rt, rule);
+          cr.lastValueText = vTxt;
+          const nt = notifyText(rule, trig, cr.lastValue, now, vTxt);
+          cr.lastNote = nt.plain;
+          cr.mailRequested = nt.mail;
+          cr.mailSent = false;
+          logger.log('自定义通知触发 [' + nt.level + '] ' + nt.name + ' | ' + nt.body);
           this.onAlarm();
         }
-        // 冷却期内条件持续成立：报警保持显示，但不重复推送，等待冷却到期再提醒
       } else {
         cr.since = 0;
         if (cr.inAlarm){
           if (hold === 'latch'){
             // 保持模式：条件恢复也不复位，等人工确认
-            if (cr.acked){
-              cr.inAlarm = false;
-              cr.acked = false;
-              cr.cooldownUntil = 0;
-            }
           } else if (hold === 'timed'){
             if (!cr.recoveredAt) cr.recoveredAt = now;
             if (now - cr.recoveredAt >= holdMs){
               cr.inAlarm = false;
               cr.recoveredAt = 0;
-              cr.cooldownUntil = 0;
             }
           } else {
-            // 自动复位：条件恢复即复位（冷却只用于重复提醒节奏）
+            // 自动复位：条件恢复即复位
             cr.inAlarm = false;
             cr.recoveredAt = 0;
-            cr.cooldownUntil = 0;
           }
         } else {
           cr.recoveredAt = 0;
-          // 条件已恢复：结束本轮确认周期，下次成立视为新一次报警
-          if (cr.acked) cr.acked = false;
-          if (cr.cooldownUntil && now >= cr.cooldownUntil) cr.cooldownUntil = 0;
         }
+        // 条件已恢复：结束本轮确认周期，下次成立视为新一次通知
+        if (cr.acked) cr.acked = false;
       }
     }
 
@@ -330,6 +388,7 @@ class RulesEngine {
     if (!cr) return { ok: false, error: '规则未在运行' };
     const rules = this.getCanvasRules ? this.getCanvasRules() : [];
     const rule = rules.find((r) => r.id === ruleId);
+    const trig = rule && (rule.nodes || []).find((n) => n.type === 'trigger');
     const now = Date.now();
     cr.inAlarm = false;
     cr.acked = true;
@@ -337,12 +396,58 @@ class RulesEngine {
     cr.recoveredAt = 0;
     // 清空该规则内节点的记忆状态，避免节点级锁存导致确认后立即回弹
     canvasEngine.resetRuleState(rule, this.canvasNodeState);
-    // 确认后重新计冷却，避免条件仍成立时立刻再次弹出
-    const ackCd = normCooldown(rule && rule.cooldown, 10);
-    // 冷却 0：确认后本轮不再重复提醒，直到条件恢复、下次越限才重新提醒
-    cr.cooldownUntil = ackCd > 0 ? now + ackCd * 60000 : -1;
-    logger.log('画布规则人工确认复位：' + ((rule && rule.name) || ruleId));
+
+    // 通知自定义通知节点：已人工确认（用于蓝屏/弹窗续期或收尾）
+    const note = notifyText(rule || {}, trig, cr.lastValue, now,
+                            cr.lastValueText || tagValueText(this.rt, rule));
+    cr.lastNote = note.plain;
+    try {
+      if (typeof this.onAck === 'function') this.onAck(ruleId, note);
+    } catch (e) {
+      logger.log('确认通知回调异常：' + (e && e.message ? e.message : e));
+    }
+
+    logger.log('自定义通知人工确认：' + note.name);
     return { ok: true };
+  }
+
+  // 等待确认的报警：给通知服务用于「保持弹窗/续期」与「确认后收尾」
+  findAckedAlarm(){
+    const rules = this.getCanvasRules ? this.getCanvasRules() : [];
+    for (const rule of rules){
+      const cr = this.rt['_cr_' + rule.id];
+      if (!cr || !cr.acked || cr.inAlarm) continue;
+      if (cr.lastFire && this.isAckNotified(rule.id, cr.lastFire)) continue;
+      const trig = (rule.nodes || []).find((n) => n.type === 'trigger');
+      const note = notifyText(rule, trig, cr.lastValue, cr.lastFire || Date.now());
+      return { ruleId: rule.id, rule: rule, note: note, lastFire: cr.lastFire };
+    }
+    return null;
+  }
+
+  // 确认通知已送达（按规则 + 触发时间记账，同一次报警只发一次确认）
+  markAckNotified(ruleId, lastFire){
+    if (!this._ackInAlarm || typeof this._ackInAlarm !== 'object') this._ackInAlarm = {};
+    this._ackInAlarm[ruleId] = lastFire || Date.now();
+  }
+
+  isAckNotified(ruleId, lastFire){
+    const got = this._ackInAlarm ? this._ackInAlarm[ruleId] : 0;
+    return !!got && got === lastFire;
+  }
+
+  // 报警弹窗/邮件是否已按「本次触发」发过（邮件开关 true 但邮件服务不可用时不会误标）
+  isMailSent(ruleId, lastFire){
+    const cr = this.rt['_cr_' + ruleId];
+    if (!cr) return false;
+    return !!cr.mailSent && cr.mailAt === (lastFire || cr.lastFire);
+  }
+
+  markMailSent(ruleId, lastFire){
+    const cr = this.rt['_cr_' + ruleId];
+    if (!cr) return;
+    cr.mailSent = true;
+    cr.mailAt = lastFire || cr.lastFire;
   }
 
   // 变量值与节点状态落盘（节流 + 变化检测，避免频繁写盘）
@@ -385,16 +490,17 @@ class RulesEngine {
       const rid = '_cr_' + rule.id;
       const cr = this.rt[rid];
       if (!cr || !cr.inAlarm) continue;
-      const trig = rule.nodes.find(n => n.type === 'trigger');
+      const trig = (rule.nodes || []).find(n => n.type === 'trigger');
       const hold = rule.hold || 'auto';
+      const note = notifyText(rule, trig, cr.lastValue, cr.lastFire || Date.now(),
+                              cr.lastValueText || tagValueText(this.rt, rule));
       out.push({
-        tag: rule.name || '画布规则',
-        desc: (hold === 'latch' && !cr.acked)
-          ? '画布规则触发（保持中，需确认复位）'
-          : '画布规则触发',
+        tag: note.name,
+        desc: note.body,
+        note: note.body,
         unit: '',
-        value: '-',
-        level: (trig && trig.level) || 'HH',
+        value: displayValue(cr.lastValue, cr.lastValueText || tagValueText(this.rt, rule)),
+        level: note.level,
         time: cr.lastFire || cr.since || Date.now(),
         thresholds: { hh: '-', h: '-', l: '-', ll: '-' },
         isTemp: false,
@@ -402,7 +508,9 @@ class RulesEngine {
         isCanvasRule: true,
         ruleId: rule.id,
         canvasHold: hold,
-        acked: !!cr.acked
+        acked: !!cr.acked,
+        mail: note.mail,
+        lastFire: cr.lastFire
       });
     }
     return out;

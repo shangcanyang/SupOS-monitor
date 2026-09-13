@@ -59,7 +59,8 @@ button.primary:hover{background:#1d4ed8}
   font-family:Consolas,Menlo,monospace}
 .item .dev{color:#64748b;font-size:11px;margin-left:auto;
   background:#f1f5f9;padding:2px 8px;border-radius:8px}
-.item .desc{color:#475569;font-size:12px;margin-bottom:8px;padding-left:2px}
+.item .desc{color:#475569;font-size:12px;margin-bottom:8px;padding-left:2px;
+  white-space:pre-line}
 
 .item .valbox{background:#fafbfc;border-radius:6px;
   padding:8px 12px;display:flex;align-items:baseline;gap:8px;

@@ -125,13 +125,13 @@ function evalRule(rule, state){
     depth: 0
   };
 
-  let active = false;
+  let out = null;
   try {
-    active = evalNode(rule, link.from, ctx, link.fromPort || 'out') === true;
+    out = evalNode(rule, link.from, ctx, link.fromPort || 'out');
   } catch (e) {
-    active = false;
+    out = null;
   }
-  return { active: active, triggerId: trigger.id };
+  return { active: out === true, triggerId: trigger.id, value: out };
 }
 
 function evalNode(rule, nodeId, ctx, fromPort){

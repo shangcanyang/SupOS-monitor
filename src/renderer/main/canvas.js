@@ -16,7 +16,6 @@ function newCanvasRule(){
     name: '规则' + (CS.rules.length + 1),
     enabled: true,
     duration: 0,
-    cooldown: 10,
     nodes: [],
     links: []
   };
@@ -63,7 +62,7 @@ const NODE_META = {
   varGet:    { label: '读变量',   icon: 'R' },
   varSet:    { label: '写变量',   icon: 'W' },
   // 触发
-  trigger:   { label: '触发报警', icon: '🔔' }
+  trigger:   { label: '自定义通知', icon: '🔔' }
 };
 
 // ============================================================
@@ -198,19 +197,6 @@ function bindTagPicker(input, node){
 // ============================================================
 // 规则下拉 / 属性框
 // ============================================================
-// 冷却分钟：允许 0（0 = 条件成立只提醒一次），非法输入回退默认 10
-function cdText(v){
-  if (v === null || v === undefined || v === '') return 10;
-  const n = Number(v);
-  return (isNaN(n) || n < 0) ? 10 : n;
-}
-function cdInput(v){
-  const s = String(v == null ? '' : v).trim();
-  if (s === '') return 10;
-  const n = Number(s);
-  return (isNaN(n) || n < 0) ? 10 : n;
-}
-
 function renderRuleSelect(){
   const sel = document.getElementById('canvasRuleSelect');
   sel.innerHTML = CS.rules.map(r =>
@@ -232,9 +218,8 @@ function renderProps(rule){
       '<option value="latch"' + (hold === 'latch' ? ' selected' : '') + '>保持到人工确认</option>' +
     '</select>' +
     '<label>保持(s)</label><input type="number" id="crHoldSec" value="' + (rule.holdSeconds || 0) + '" min="0">' +
-    '<label>冷却(min)</label><input type="number" id="crCd" value="' + cdText(rule.cooldown) + '" min="0">' +
     '<label><input type="checkbox" id="crEn"' + (rule.enabled ? ' checked' : '') + '> 启用</label>' +
-    '<div class="n-tip">冷却=条件持续成立时的重复提醒间隔，填 0 表示只提醒一次（不再重复）。保持到人工确认需在报警弹窗点「确认复位」。</div>';
+    '<div class="n-tip">条件成立只提醒一次；条件恢复后再次成立才会再次提醒。保持到人工确认需在报警弹窗点「确认复位」。</div>';
   document.getElementById('crName').addEventListener('change', e => {
     rule.name = e.target.value.trim() || rule.name;
     renderRuleSelect();
@@ -247,9 +232,6 @@ function renderProps(rule){
   });
   document.getElementById('crHoldSec').addEventListener('change', e => {
     rule.holdSeconds = Number(e.target.value) || 0;
-  });
-  document.getElementById('crCd').addEventListener('change', e => {
-    rule.cooldown = cdInput(e.target.value);
   });
   document.getElementById('crEn').addEventListener('change', e => {
     rule.enabled = e.target.checked;
@@ -268,8 +250,6 @@ function syncPropsToRule(){
   if (h) rule.hold = h.value;
   const hs = document.getElementById('crHoldSec');
   if (hs) rule.holdSeconds = Number(hs.value) || 0;
-  const c = document.getElementById('crCd');
-  if (c) rule.cooldown = cdInput(c.value);
   const e = document.getElementById('crEn');
   if (e) rule.enabled = e.checked;
 }
@@ -316,18 +296,7 @@ function renderCanvas(){
     });
   });
 
-  nodesBox.querySelectorAll('.c-port-in').forEach(p => {
-    p.addEventListener('mouseup', e => {
-      e.stopPropagation();
-      e.preventDefault();
-      if (!CS.linking) return;
-      const toId = p.getAttribute('data-node');
-      const toPort = p.getAttribute('data-port') || 'in';
-      finishLink(CS.linking.fromId, CS.linking.fromPort, toId, toPort);
-    });
-  });
-
-  nodesBox.querySelectorAll('.cnode input, .cnode select').forEach(el => {
+  nodesBox.querySelectorAll('.cnode input, .cnode select, .cnode textarea').forEach(el => {
     if (el.getAttribute('data-field') === 'tag') return;
     el.addEventListener('change', () => {
       const id = el.getAttribute('data-nid');
@@ -345,6 +314,7 @@ function renderCanvas(){
       if (n.type === 'varSet' && field === 'mode') renderCanvas();
       if (n.type === 'constN' && field === 'valueType') renderCanvas();
       if (n.type === 'mathFn' && field === 'fn') renderCanvas();
+      if (n.type === 'trigger' && field === 'msg') renderCanvas();
     });
   });
 
@@ -354,6 +324,37 @@ function renderCanvas(){
 // ============================================================
 // 拖拽连线
 // ============================================================
+// 连线层固定分两层：静态连线层 + 临时虚线层。重绘静态连线时不再整块
+// 重写 svg.innerHTML，临时虚线单独放置，避免拖拽中/结束后出现残留。
+function linkLayers(){
+  const svg = document.getElementById('canvasLinks');
+  if (!svg) return null;
+  let linkLayer = svg.querySelector('#linkLayer');
+  let rubberLayer = svg.querySelector('#rubberLayer');
+  if (!linkLayer || !rubberLayer){
+    svg.innerHTML = '<g id="linkLayer"></g><g id="rubberLayer"></g>';
+    linkLayer = svg.querySelector('#linkLayer');
+    rubberLayer = svg.querySelector('#rubberLayer');
+  }
+  return { linkLayer: linkLayer, rubberLayer: rubberLayer };
+}
+
+// 清除拖拽时画的蓝色虚线（未连成时不该留痕）
+function clearRubber(){
+  const el = document.getElementById('rubberLine');
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+// 结束连线态：清虚线、清高亮、清 hover，可重复调用
+function endLinking(){
+  CS.linking = null;
+  clearRubber();
+  const area = document.getElementById('canvasArea');
+  if (area) area.classList.remove('linking');
+  document.querySelectorAll('.c-port-in.hover-target').forEach(el => el.classList.remove('hover-target'));
+  document.querySelectorAll('.c-port-out.active').forEach(el => el.classList.remove('active'));
+}
+
 function startLinkDrag(fromId, fromPort, portEl){
   const container = document.getElementById('canvasNodes');
   const cr = container.getBoundingClientRect();
@@ -363,20 +364,22 @@ function startLinkDrag(fromId, fromPort, portEl){
     y: pr.top - cr.top + pr.height / 2
   };
 
+  endLinking();                                   // 先收尾上一次可能残留的连线态
   CS.linking = { fromId, fromPort, fromPos: from, cur: from };
   portEl.classList.add('active');
   document.getElementById('canvasArea').classList.add('linking');
 
-  const svg = document.getElementById('canvasLinks');
-  let rubber = document.getElementById('rubberLine');
-  if (!rubber){
+  const layers = linkLayers();
+  let rubber = null;
+  if (layers){
     rubber = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     rubber.setAttribute('id', 'rubberLine');
     rubber.setAttribute('class', 'rubber-line');
-    svg.appendChild(rubber);
+    layers.rubberLayer.appendChild(rubber);
   }
 
   const drawRubber = () => {
+    if (!rubber || !CS.linking) return;
     const p1 = CS.linking.fromPos;
     const p2 = CS.linking.cur;
     const dx = Math.max(60, Math.abs(p2.x - p1.x) / 2);
@@ -389,6 +392,7 @@ function startLinkDrag(fromId, fromPort, portEl){
   drawRubber();
 
   const onMove = ev => {
+    if (!CS.linking) return;
     const r = container.getBoundingClientRect();
     CS.linking.cur = { x: ev.clientX - r.left, y: ev.clientY - r.top };
     drawRubber();
@@ -402,29 +406,35 @@ function startLinkDrag(fromId, fromPort, portEl){
   const onUp = ev => {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
-    portEl.classList.remove('active');
-    document.getElementById('canvasArea').classList.remove('linking');
-    document.querySelectorAll('.c-port-in.hover-target').forEach(el => el.classList.remove('hover-target'));
-    if (rubber && rubber.parentNode) rubber.parentNode.removeChild(rubber);
-
+    window.removeEventListener('blur', onCancel);
     const target = document.elementFromPoint(ev.clientX, ev.clientY);
-    if (target && target.classList.contains('c-port-in')){
-      const toId = target.getAttribute('data-node');
-      const toPort = target.getAttribute('data-port') || 'in';
+    const okPort = (target && target.classList.contains('c-port-in')) ? target : null;
+    endLinking();                                 // 关键：先彻底清掉虚线再重绘
+    if (okPort){
+      const toId = okPort.getAttribute('data-node');
+      const toPort = okPort.getAttribute('data-port') || 'in';
       finishLink(fromId, fromPort, toId, toPort);
-    } else {
-      CS.linking = null;
     }
+  };
+
+  // 失焦（拖到窗口外松手）时也要收尾，避免虚线一直挂在画布上
+  const onCancel = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onCancel);
+    endLinking();
   };
 
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
+  window.addEventListener('blur', onCancel);
 }
 
 function finishLink(fromId, fromPort, toId, toPort){
   const rule = currentRule();
   if (!rule) return;
   CS.linking = null;
+  clearRubber();
   if (fromId === toId) return;
   rule.links = rule.links.filter(l =>
     !(l.from === fromId && l.to === toId &&
@@ -803,13 +813,19 @@ function nodeHtml(n){
     ports = inSingle + outSingle;
   }
   else if (n.type === 'trigger'){
+    const mailOn = (n.mail === true || n.mail === 'true');
     body =
       '<div class="row"><label>级别</label>' +
       '<select data-nid="' + n.id + '" data-field="level">' +
         ['HH','H','L','LL'].map(x =>
           '<option value="' + x + '"' + (n.level === x ? ' selected' : '') + '>' + x + '</option>'
         ).join('') +
-      '</select></div>';
+      '</select></div>' +
+      '<textarea data-nid="' + n.id + '" data-field="msg" rows="2" spellcheck="false" ' +
+        'placeholder="通知内容，留空则用默认文案">' + esc(n.msg || '') + '</textarea>' +
+      '<label><input type="checkbox" data-nid="' + n.id + '" data-field="mail"' +
+        (mailOn ? ' checked' : '') + '> 同时发送邮件</label>' +
+      '<div class="n-tip">可用占位符：{rule} 规则名、{time} 触发时间、{value} 触发值。不勾选邮件时只在报警弹窗提醒。</div>';
     ports = inSingle;
   }
 
@@ -818,6 +834,9 @@ function nodeHtml(n){
     kindTxt = n.tag.length > 12 ? n.tag.slice(-12) : n.tag;
   } else if ((n.type === 'varGet' || n.type === 'varSet') && n.name){
     kindTxt = n.name;
+  } else if (n.type === 'trigger'){
+    const m = String(n.msg || '').trim();
+    kindTxt = m ? (m.length > 10 ? m.slice(0, 10) + '…' : m) : '默认文案';
   }
 
   return '<div class="cnode type-' + n.type + '" data-id="' + n.id +
@@ -841,7 +860,8 @@ function bindNodeDrag(n, el){
   el.addEventListener('mousedown', e => {
     if (e.target.classList.contains('c-port')) return;
     if (e.target.classList.contains('cnode-del')) return;
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' ||
+        e.target.tagName === 'TEXTAREA') return;
 
     const sx = e.clientX, sy = e.clientY;
     const nx0 = n.x, ny0 = n.y;
@@ -870,10 +890,11 @@ function bindNodeDrag(n, el){
 function updateLinks(){
   const rule = currentRule();
   if (!rule) return;
-  const svg = document.getElementById('canvasLinks');
   const container = document.getElementById('canvasNodes');
-  if (!svg || !container) return;
-  const rubber = document.getElementById('rubberLine');
+  const layers = linkLayers();
+  if (!layers || !container) return;
+  // 不在连线状态时，任何一次重绘都顺手清掉可能残留的临时虚线
+  if (!CS.linking) clearRubber();
   const cr = container.getBoundingClientRect();
 
   const lines = rule.links.map((l, i) => {
@@ -901,9 +922,9 @@ function updateLinks(){
            '<path class="link-line" d="' + d + '"></path>';
   }).join('');
 
-  svg.innerHTML = lines + (rubber ? rubber.outerHTML : '');
+  layers.linkLayer.innerHTML = lines;
 
-  svg.querySelectorAll('path.link-hit').forEach(p => {
+  layers.linkLayer.querySelectorAll('path.link-hit').forEach(p => {
     p.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const i = Number(p.getAttribute('data-link'));
@@ -943,7 +964,7 @@ function makeNodeObj(type, x, y){
   else if (type === 'mathFn'){ base.fn = 'abs'; base.digits = 0; }
   else if (type === 'scale'){ base.inMin = 0; base.inMax = 100; base.outMin = 0; base.outMax = 100; base.clamp = false; }
   else if (type === 'stat'){ base.window = 60; base.fn = 'avg'; }
-  else if (type === 'trigger') base.level = 'HH';
+  else if (type === 'trigger'){ base.level = 'HH'; base.msg = ''; base.mail = false; }
   return base;
 }
 
@@ -1022,7 +1043,7 @@ function startDragCreate(type, downEvent){
 function canvasInitBindings(){
   document.getElementById('canvasRuleSelect').addEventListener('change', e => {
     CS.currentId = e.target.value;
-    CS.linking = null;
+    endLinking();
     renderCanvas();
   });
   document.getElementById('btnCanvasNew').addEventListener('click', () => {
@@ -1045,9 +1066,12 @@ function canvasInitBindings(){
   document.getElementById('btnCanvasSave').addEventListener('click', canvasSave);
   document.getElementById('canvasArea').addEventListener('mousedown', e => {
     if (e.target.id === 'canvasArea' || e.target.id === 'canvasNodes'){
-      CS.linking = null;
-      document.getElementById('canvasArea').classList.remove('linking');
+      endLinking();
     }
+  });
+  // 按 Esc 放弃本次连线，虚线一并清除
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && CS.linking) endLinking();
   });
   bindSideItems();
   window.addEventListener('resize', () => setTimeout(updateLinks, 0));
