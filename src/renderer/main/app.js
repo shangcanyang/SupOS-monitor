@@ -350,6 +350,7 @@ function cardHtml(p, muted){
   const dev = liveDeviceMap[p.tag] || '';
   return '<div class="pcard' + (muted ? ' muted' : '') + '" draggable="true" ' +
     'data-tag="' + esc(p.tag) + '" data-dev="' + esc(dev) + '">' +
+    (batchMode ? '<input type="checkbox" class="pc-chk" data-tag="' + esc(p.tag) + '">' : '') +
     '<div class="pc-tag" title="' + esc(p.tag) + '">' + esc(p.tag) + '</div>' +
     '<div class="pc-desc" title="' + esc(p.desc || '') + '">' +
       (p.desc ? esc(p.desc) : '&nbsp;') + '</div>' +
@@ -413,8 +414,13 @@ function bindCardEvents(){
   });
 
   box.querySelectorAll('.pcard').forEach(card => {
+    const chk = card.querySelector('.pc-chk');
+    if (chk){
+      chk.checked = !!batchSel[card.getAttribute('data-tag')];
+      chk.addEventListener('change', () => onCardCheck(card.getAttribute('data-tag'), chk.checked));
+    }
     card.addEventListener('click', () => {
-      if (window.__cardDragging) return;
+      if (window.__cardDragging || batchMode) return;
       openPointDialog(card.getAttribute('data-tag'));
     });
     card.addEventListener('dragstart', e => {
@@ -798,18 +804,6 @@ async function addTag(){
   await openAddPointDialog();
 }
 
-async function importTags(){
-  const txt = await inputDialog({
-    title: '粘贴导入位号',
-    hint: '每行一个，格式：<b>位号[,描述[,单位]]</b><br>例如：<br>HCY_TI_710A44_PV,塔顶温度,℃<br>HCY_PI_710A45_PV',
-    defaultValue: ''
-  });
-  if (!txt) return;
-  const r = await window.api.importTags(txt);
-  await msgBox('导入完成：新增 ' + r.added + ' 个，跳过重复 ' + r.skipped + ' 个。\n当前共 ' + r.total + ' 个位号。', '导入完成');
-  await renderLive();
-}
-
 async function importExcel(){
   const r = await window.api.importExcel();
   if (!r.ok){
@@ -834,173 +828,6 @@ async function openDeviceManager(){
   await renderDevices();
   document.getElementById('devModal').style.display = 'flex';
 }
-
-// ============================================================
-// 规则测试（点位阈值 / 高级规则）
-// ============================================================
-let testCanvasRulesCache = [];
-
-function testKind(){
-  const el = document.getElementById('testKind');
-  return el ? el.value : 'point';
-}
-
-function onTestKindChange(){
-  const k = testKind();
-  document.getElementById('testPointBox').style.display = (k === 'point') ? '' : 'none';
-  document.getElementById('testCanvasBox').style.display = (k === 'canvas') ? '' : 'none';
-  const box = document.getElementById('testResult');
-  if (box) box.style.display = 'none';
-}
-
-async function openTestRule(){
-  const data = await window.api.loadTags();
-  const points = data.points || [];
-  const sel = document.getElementById('testTag');
-  sel.innerHTML = points.length
-    ? points.map(p => '<option value="' + esc(p.tag) + '">' + esc(p.tag) +
-        (p.desc ? ' · ' + esc(p.desc) : '') + '</option>').join('')
-    : '<option value="">（暂无位号）</option>';
-  await loadTestCanvasRules();
-  document.getElementById('testValue').value = '';
-  document.getElementById('testResult').style.display = 'none';
-  document.getElementById('testModal').style.display = 'flex';
-  onTestKindChange();
-  setTimeout(() => document.getElementById('testValue').focus(), 30);
-}
-
-async function loadTestCanvasRules(){
-  const r = await window.api.canvasLoad();
-  testCanvasRulesCache = (r && r.rules) || [];
-  const sel = document.getElementById('testCanvasRule');
-  sel.innerHTML = testCanvasRulesCache.length
-    ? testCanvasRulesCache.map(x => '<option value="' + esc(x.id) + '">' +
-        esc(x.name || x.id) + '</option>').join('')
-    : '<option value="">（暂无高级规则）</option>';
-  renderTestCanvasInputs();
-}
-
-function currentTestRule(){
-  const sel = document.getElementById('testCanvasRule');
-  if (!sel) return null;
-  return testCanvasRulesCache.find(x => x.id === sel.value) || null;
-}
-
-function collectRuleSources(rule){
-  const tags = [];
-  const vars = [];
-  for (const n of (rule.nodes || [])){
-    if ((n.type === 'tag' || n.type === 'bool' || n.type === 'tagStatus') &&
-        n.tag && tags.indexOf(n.tag) === -1){
-      tags.push(n.tag);
-    }
-    if (n.type === 'varGet' && n.name && vars.indexOf(n.name) === -1){
-      vars.push(n.name);
-    }
-  }
-  return { tags: tags, vars: vars };
-}
-
-function renderTestCanvasInputs(){
-  const box = document.getElementById('testCanvasInputs');
-  const rule = currentTestRule();
-  if (!rule){
-    box.innerHTML = '<div class="mhint" style="margin:0">请先到「高级规则」页新建并保存一个规则。</div>';
-    return;
-  }
-  const src = collectRuleSources(rule);
-  if (!src.tags.length && !src.vars.length){
-    box.innerHTML = '<div class="mhint" style="margin:0">该规则不依赖位号或变量，可直接测试。</div>';
-    return;
-  }
-  let html = '';
-  if (src.tags.length){
-    html += '<div style="font-size:12px;color:#475569;margin-bottom:6px">位号模拟值（留空取实时值）</div>';
-    html += src.tags.map(t =>
-      '<div class="adj-row" style="margin-bottom:6px">' +
-      '<label title="' + esc(t) + '">' + esc(t.length > 18 ? t.slice(-18) : t) + '</label>' +
-      '<input type="text" class="tc-tag" data-tag="' + esc(t) + '" placeholder="留空取实时值"></div>'
-    ).join('');
-  }
-  if (src.vars.length){
-    html += '<div style="font-size:12px;color:#475569;margin:8px 0 6px">变量模拟值（留空取当前值）</div>';
-    html += src.vars.map(v =>
-      '<div class="adj-row" style="margin-bottom:6px">' +
-      '<label>' + esc(v) + '</label>' +
-      '<input type="text" class="tc-var" data-var="' + esc(v) + '" placeholder="留空取当前值"></div>'
-    ).join('');
-  }
-  box.innerHTML = html;
-}
-
-async function runTestRule(){
-  if (testKind() === 'canvas'){ await runTestCanvas(); return; }
-  const tag = document.getElementById('testTag').value;
-  const value = document.getElementById('testValue').value.trim();
-  const box = document.getElementById('testResult');
-  box.style.display = 'block';
-  if (!tag){ box.innerHTML = '<div style="color:#dc2626">请先添加位号。</div>'; return; }
-  if (value === ''){ await msgBox('请输入模拟值。'); return; }
-  const r = await window.api.testRule({ tag, value });
-  if (!r.ok){ box.innerHTML = '<div style="color:#dc2626">错误：' + esc(r.error) + '</div>'; return; }
-  const t = r.thresholds;
-  const levelColors = { HH:'#dc2626', H:'#f97316', L:'#ca8a04', LL:'#2563eb' };
-  const levelTxt = r.level
-    ? '<b style="color:' + levelColors[r.level] + '">' + r.level + '</b>'
-    : '<span style="color:#16a34a">正常</span>';
-  const cd = r.cooldownUntil ? new Date(r.cooldownUntil).toLocaleTimeString('zh-CN') : '未进入冷却';
-  box.innerHTML =
-    '<div><b>判断结果：</b>' + levelTxt + '</div>' +
-    '<div style="color:#64748b;margin-top:4px">' +
-      '阈值：HH=' + (t.hh == null ? '空' : t.hh) +
-      '　H='  + (t.h  == null ? '空' : t.h)  +
-      '　L='  + (t.l  == null ? '空' : t.l)  +
-      '　LL=' + (t.ll == null ? '空' : t.ll) +
-      (t.temp ? '　<b style="color:#f97316">（临时值生效中）</b>' : '') +
-    '</div>' +
-    '<div style="color:#64748b;margin-top:4px">' +
-      '持续时间：' + r.duration + ' 秒　冷却：' + r.cooldown + ' 分钟' +
-    '</div>' +
-    '<div style="color:#64748b;margin-top:4px">' +
-      '当前报警中：' + (r.inAlarm ? '是' : '否') + '　冷却至：' + cd +
-    '</div>';
-}
-
-async function runTestCanvas(){
-  const box = document.getElementById('testResult');
-  box.style.display = 'block';
-  const rule = currentTestRule();
-  if (!rule){ box.innerHTML = '<div style="color:#dc2626">请先选择一个高级规则。</div>'; return; }
-  const tagValues = {};
-  document.querySelectorAll('#testCanvasInputs .tc-tag').forEach(el => {
-    const v = el.value.trim();
-    if (v !== '') tagValues[el.getAttribute('data-tag')] = v;
-  });
-  const varValues = {};
-  document.querySelectorAll('#testCanvasInputs .tc-var').forEach(el => {
-    const v = el.value.trim();
-    if (v !== '') varValues[el.getAttribute('data-var')] = v;
-  });
-  const r = await window.api.testCanvas({ ruleId: rule.id, tagValues: tagValues, varValues: varValues });
-  if (!r.ok){ box.innerHTML = '<div style="color:#dc2626">错误：' + esc(r.error) + '</div>'; return; }
-  box.innerHTML =
-    '<div><b>规则：</b>' + esc(r.name || r.ruleId) +
-      (r.enabled === false ? ' <span style="color:#f59e0b">（当前未启用）</span>' : '') + '</div>' +
-    '<div style="margin-top:4px"><b>判断结果：</b>' +
-      (r.active
-        ? '<b style="color:#dc2626">条件成立（会触发报警）</b>'
-        : '<span style="color:#16a34a">条件不成立</span>') +
-    '</div>' +
-    '<div style="color:#64748b;margin-top:4px">' +
-      '持续：' + r.duration + ' 秒　保持：' + esc(r.hold) +
-      '　邮箱通知：' + (r.mail ? '开' : '关') +
-    '</div>' +
-    '<div style="color:#64748b;margin-top:4px;white-space:pre-line">' +
-      '通知内容：' + esc(r.note || '（默认文案）') +
-    '</div>' +
-    '<div style="color:#94a3b8;margin-top:4px">测试只做一次离线判断，不影响正在运行的报警状态。</div>';
-}
-
 // ============================================================
 // 装置分类
 // ============================================================
@@ -1402,6 +1229,54 @@ async function clearLog(){
   refreshLog();
 }
 
+var batchMode = false;
+var batchSel = {};
+
+function toggleBatchMode(on){
+  batchMode = (typeof on === 'boolean') ? on : !batchMode;
+  batchSel = {};
+  syncBatchBtn();
+  renderLive();
+}
+
+function syncBatchBtn(){
+  var n = Object.keys(batchSel).length;
+  var enter = document.getElementById('btnBatchDel');
+  var go = document.getElementById('btnBatchGo');
+  var cancel = document.getElementById('btnBatchCancel');
+  if (enter){
+    enter.style.display = batchMode ? 'none' : '';
+    enter.classList.remove('on');
+  }
+  if (go){
+    go.style.display = batchMode ? '' : 'none';
+    go.textContent = n ? ('删除选中 (' + n + ')') : '删除选中';
+    go.disabled = !n;
+  }
+  if (cancel) cancel.style.display = batchMode ? '' : 'none';
+}
+
+function onCardCheck(tag, checked){
+  if (checked) batchSel[tag] = true;
+  else delete batchSel[tag];
+  syncBatchBtn();
+}
+
+async function batchDelete(){
+  var tags = Object.keys(batchSel);
+  if (!tags.length){ await msgBox('请先勾选要删除的位号。', '提示'); return; }
+  var ok = await confirmBox('将删除以下 ' + tags.length + ' 个位号（删除后不再监控与告警）：\n\n' +
+    tags.join('、') + '\n\n此操作不可撤销，是否继续？', '批量删除确认');
+  if (!ok) return;
+  var r = await window.api.removeTags(tags);
+  batchSel = {};
+  batchMode = false;
+  syncBatchBtn();
+  await renderLive();
+  await msgBox('已删除 ' + ((r && r.removed) || tags.length) + ' 个位号，当前共 ' + ((r && r.total) || '-') + ' 个。', '删除完成');
+}
+
+
 // ============================================================
 // 绑定
 // ============================================================
@@ -1424,9 +1299,10 @@ bind('btnLiveCollapseAll', () => {
   renderLive();
 });
 bind('btnAddTag', addTag);
-bind('btnImportTags', importTags);
+bind('btnBatchDel', () => toggleBatchMode(true));
+bind('btnBatchGo', batchDelete);
+bind('btnBatchCancel', () => toggleBatchMode(false));
 bind('btnImportExcel', importExcel);
-bind('btnTestRule', openTestRule);
 bind('btnFetchMeta', fetchMeta);
 bind('btnDevMgr', openDeviceManager);
 bind('btnDevAdd', () => { deviceDraft.push({ name: '', keywords: [] }); renderDeviceList(); });
@@ -1451,13 +1327,6 @@ bind('btnVarAdd', addVarRow);
 bind('btnVarReload', renderVars);
 bind('btnVarSave', saveVars);
 
-document.getElementById('testCancel').addEventListener('click', () => {
-  document.getElementById('testModal').style.display = 'none';
-});
-document.getElementById('testKind').addEventListener('change', onTestKindChange);
-document.getElementById('testCanvasRule').addEventListener('change', renderTestCanvasInputs);
-document.getElementById('testRun').addEventListener('click', runTestRule);
-
 // 点位编辑弹框
 bind('ptCancel', closePointDialog);
 bind('ptSave', savePointDialog);
@@ -1466,11 +1335,6 @@ bind('ptPause', pausePointDeviceDialog);
 document.getElementById('devCancel').addEventListener('click', () => {
   document.getElementById('devModal').style.display = 'none';
 });
-document.getElementById('testValue').addEventListener('keydown', e => {
-  if (e.key === 'Enter') runTestRule();
-});
-
-window.api.onConnState(d => setConn(d.state, d.text));
 window.api.onUpdateStatus(d => {
   const stat = document.getElementById('updateStat');
   if (stat){
@@ -1501,3 +1365,10 @@ loadConfigToUI();
 renderLive();
 canvasInitBindings();
 document.getElementById('appVer').textContent = '1.0.0';
+
+// 启动即主动同步一次连接状态：避免主进程早期推送的 conn:state 被错过
+// （WS 已连接却显示橙色「初始化中」的根因）
+if (window.api.getConnState){
+  window.api.getConnState().then(function (d){ if (d) setConn(d.state, d.text); });
+}
+window.api.onConnState(d => setConn(d.state, d.text));

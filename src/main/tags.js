@@ -82,6 +82,17 @@ function removeOne(index){
   return { ok: true, total: cur.points.length };
 }
 
+function removeMany(tagList){
+  const cur = load();
+  const set = {};
+  (Array.isArray(tagList) ? tagList : []).forEach(t => { set[String(t)] = true; });
+  const before = cur.points.length;
+  cur.points = cur.points.filter(p => !set[p.tag]);
+  cur.liveOrder = (cur.liveOrder || []).filter(t => !set[t]);
+  save(cur);
+  return { ok: true, removed: before - cur.points.length, total: cur.points.length };
+}
+
 function importRows(rows){
   const cur = load();
   const exist = {};
@@ -115,4 +126,4 @@ function saveLiveOrder(order){
   return { ok: true };
 }
 
-module.exports = { load, save, importText, addOne, removeOne, importRows, saveLiveOrder };
+module.exports = { load, save, importText, addOne, removeOne, removeMany, importRows, saveLiveOrder };

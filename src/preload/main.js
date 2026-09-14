@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   saveRules:  (p)   => ipcRenderer.invoke('rules:save', p),
   addTag:     (o)   => ipcRenderer.invoke('tags:add', o),
   removeTag:  (i)   => ipcRenderer.invoke('tags:remove', i),
+  removeTags: (arr) => ipcRenderer.invoke('tags:removeMany', arr),
   importExcel:()    => ipcRenderer.invoke('tags:importExcel'),
   fetchMeta:  ()    => ipcRenderer.invoke('meta:fetch'),
   testRule:   (o)   => ipcRenderer.invoke('rule:test', o),
@@ -56,6 +57,7 @@ contextBridge.exposeInMainWorld('api', {
   checkUpdate:  ()  => ipcRenderer.invoke('update:check'),
 
   onConnState:     cb => ipcRenderer.on('conn:state',      (_e, d) => cb(d)),
+  getConnState:    () => ipcRenderer.invoke('conn:get'),
   onUpdateStatus:  cb => ipcRenderer.on('update:status',   (_e, d) => cb(d)),
   onConfigReloaded:cb => ipcRenderer.on('config:reloaded', (_e, d) => cb(d))
 });

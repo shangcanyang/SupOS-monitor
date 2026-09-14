@@ -22,6 +22,7 @@ if (!gotLock) { app.quit(); process.exit(0); }
 
 let mainWin = null;
 let wsClient = null;
+let lastConn = null;
 let engine = null;
 let mailBufferTimer = null;
 let refreshTimer = null;
@@ -40,6 +41,10 @@ function createMainWindow(){
     }
   });
   mainWin.loadFile(path.join(__dirname, '../renderer/main/index.html'));
+  // 渲染进程加载完成时补推一次最新连接状态，避免早期 conn:state 推送被错过
+  mainWin.webContents.on('did-finish-load', () => {
+    if (lastConn) mainWin.webContents.send('conn:state', lastConn);
+  });
   mainWin.once('ready-to-show', () => {
     mainWin.show();
     mainWin.focus();
@@ -51,6 +56,7 @@ function createMainWindow(){
 }
 
 function sendToMain(channel, data){
+  if (channel === 'conn:state') lastConn = data;
   if (mainWin && !mainWin.isDestroyed()) {
     mainWin.webContents.send(channel, data);
   }
@@ -142,6 +148,8 @@ ipcMain.handle('tags:import', (_e,t)  => tags.importText(t));
 ipcMain.handle('tags:save',   (_e,d)  => tags.save(d));
 ipcMain.handle('tags:add',    (_e,o)  => tags.addOne(o));
 ipcMain.handle('tags:remove', (_e,i)  => tags.removeOne(i));
+ipcMain.handle('tags:removeMany', (_e,arr) => tags.removeMany(arr));
+ipcMain.handle('conn:get', () => lastConn);
 ipcMain.handle('tags:saveLiveOrder', (_e, order) => tags.saveLiveOrder(order));
 
 // ---- 环境变量 ----
@@ -399,7 +407,7 @@ ipcMain.handle('rule:testCanvas', (_e, { ruleId, tagValues, varValues }) => {
   try { res = canvasEngine.evalRule(rule, { runtime, vars, nodeState, now: Date.now() }); }
   catch (e) { return { ok: false, error: '求值异常：' + e.message }; }
 
-  const trig = (rule.nodes || []).find(n => n.type === 'trigger');
+  const trig = canvasEngine.pickNotifyNode(rule);
   return {
     ok: true,
     ruleId: rule.id,

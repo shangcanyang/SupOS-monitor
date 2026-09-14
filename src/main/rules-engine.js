@@ -36,7 +36,10 @@ function tagValueText(rt, rule){
   const parts = [];
   const nodes = (rule && rule.nodes) || [];
   for (const n of nodes){
-    if ((n.type === 'tag' || n.type === 'tagStatus') && n.tag){
+    if ((n.type === 'tag' || n.type === 'tagStatus' ||
+         n.type === 'deviceInput' || n.type === 'deviceGet' ||
+         n.type === 'deviceInputSetVar' || n.type === 'deviceGetSetVar' ||
+         n.type === 'statusLast') && n.tag){
       const r = rt && rt[n.tag];
       if (r && r.value !== null && r.value !== undefined && r.value !== ''){
         parts.push(n.tag + '=' + fmtValue(r.value));
@@ -62,7 +65,11 @@ function notifyText(rule, trig, value, now, fallback){
     .replace(/\{rule\}/g, rule.name || rule.id || '')
     .replace(/\{value\}/g, displayValue(value, fallback))
     .replace(/\{time\}/g, fmtTime(now));
-  const name = (typeof rule.name === 'string' && rule.name.trim()) ? rule.name.trim() : '自定义通知';
+  // 新版「执行操作」节点的操作说明优先作为通知名（旧版通知节点无 label，行为不变）
+  const actLabel = (trig && trig.type === 'deviceOutput' &&
+                    typeof trig.label === 'string' && trig.label.trim()) ? trig.label.trim() : '';
+  const name = actLabel ||
+    ((typeof rule.name === 'string' && rule.name.trim()) ? rule.name.trim() : '自定义通知');
   const level = (trig && trig.level) || 'HH';
   const title = '【' + level + '】' + name;
   return {
@@ -321,15 +328,24 @@ class RulesEngine {
       try { res = canvasEngine.evalRule(rule, state); }
       catch (e) { res = { active: false }; }
 
-      // 报警级别 / 通知文案取自画布中的自定义通知节点（type='trigger'）
-      const trig = (rule.nodes || []).find(n => n.type === 'trigger');
+      let trig = canvasEngine.pickNotifyNode(rule);
+      if (res.acts && res.acts.length){
+        for (const a of res.acts){
+          if (a.mode === 'log'){
+            logger.log('画布动作 [' + (rule.name || rule.id) + '] ' +
+                       (a.label || '记录日志') + (a.msg ? ' | ' + a.msg : ''));
+          }
+        }
+        const notifyAct = res.acts.filter(a => a.mode !== 'log')[0];
+        if (notifyAct) trig = notifyAct;
+      }
       if (Object.prototype.hasOwnProperty.call(res, 'value')) cr.lastValue = res.value;
 
-      const hold = rule.hold || 'auto';                                       // auto | timed | latch
+      // 画布规则为事件型：一次动作触发即一次报警，默认锁存到人工确认
+      const hold = rule.hold || 'latch';
       const holdMs = Math.max(0, Number(rule.holdSeconds) || 0) * 1000;
 
       if (res.active){
-        const durMs = (rule.duration || 0) * 1000;
         if (!cr.since) cr.since = now;
         if (now - cr.since < durMs) continue;                                 // 持续时间未满，先不提醒
 
@@ -388,7 +404,7 @@ class RulesEngine {
     if (!cr) return { ok: false, error: '规则未在运行' };
     const rules = this.getCanvasRules ? this.getCanvasRules() : [];
     const rule = rules.find((r) => r.id === ruleId);
-    const trig = rule && (rule.nodes || []).find((n) => n.type === 'trigger');
+    const trig = canvasEngine.pickNotifyNode(rule);
     const now = Date.now();
     cr.inAlarm = false;
     cr.acked = true;
@@ -418,7 +434,7 @@ class RulesEngine {
       const cr = this.rt['_cr_' + rule.id];
       if (!cr || !cr.acked || cr.inAlarm) continue;
       if (cr.lastFire && this.isAckNotified(rule.id, cr.lastFire)) continue;
-      const trig = (rule.nodes || []).find((n) => n.type === 'trigger');
+      const trig = canvasEngine.pickNotifyNode(rule);
       const note = notifyText(rule, trig, cr.lastValue, cr.lastFire || Date.now());
       return { ruleId: rule.id, rule: rule, note: note, lastFire: cr.lastFire };
     }
@@ -490,7 +506,7 @@ class RulesEngine {
       const rid = '_cr_' + rule.id;
       const cr = this.rt[rid];
       if (!cr || !cr.inAlarm) continue;
-      const trig = (rule.nodes || []).find(n => n.type === 'trigger');
+      const trig = canvasEngine.pickNotifyNode(rule);
       const hold = rule.hold || 'auto';
       const note = notifyText(rule, trig, cr.lastValue, cr.lastFire || Date.now(),
                               cr.lastValueText || tagValueText(this.rt, rule));

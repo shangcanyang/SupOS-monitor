@@ -1,1085 +1,1303 @@
-// ============================================================
-// 画布状态
-// ============================================================
+/* ============================================================
+ * 高级规则 · 画布页（米家自动化极客版 复刻）
+ * ------------------------------------------------------------
+ * 1) 画面 1:1 复刻：顶部规则标签栏 / 左侧 6 组 25 个内容块库 /
+ *    中央浅灰蓝画布空态 / 画布悬浮工具条 / 底部帮助菜单
+ * 2) 节点体系：米家 25 个内容块（data-type 与语义一致），
+ *    支持拖拽入画布、卡片连线、选中改属性、删除、缩放平移、保存还原
+ * 3) 数据源：现有位号(tags) 与 变量(vars)；执行动作仍走现有报警弹窗/邮件链路
+ * 4) 仅支持新版画布规则（model:'signal'），旧画布规则（tag/compare/edge/trigger 等）不再兼容
+ * ============================================================ */
+(function () {
+'use strict';
+
+const NS = 'http://www.w3.org/2000/svg';
+const CARD_DEFAULT_INS = [['in', '']];
+const CARD_DEFAULT_OUTS = [['out', '']];
+
+// 画布运行时状态
 const CS = {
   rules: [],
-  currentId: null,
-  linking: null,
+  curId: null,
+  sel: null,
   tags: [],
   tagMap: {},
-  varNames: []
+  varNames: [],
+  view: { x: 0, y: 0, z: 1 },
+  link: null,
+  portIndex: {},
+  pendingCreate: null
 };
 
-function newCanvasRule(){
+/* ============================================================
+ * 一、内容块目录（左侧库 = 6 组 25 块，命名与参考一致）
+ * ============================================================ */
+const CAT_COLOR = {
+  device: '#0d84ff',
+  time: '#ff9500',
+  flow: '#7c5cff',
+  logic: '#00b3a4',
+  other: '#8c8c8c',
+  variable: '#34c759'
+};
+
+const CAT_NAME = {
+  device: '设备', time: '时间', flow: '流程',
+  logic: '逻辑', other: '其他', variable: '变量'
+};
+
+const OPS = [
+  ['', '— 不判断 —'], ['==', '等于'], ['!=', '不等于'], ['>', '大于'],
+  ['<', '小于'], ['>=', '大于等于'], ['<=', '小于等于']
+];
+const LEVELS = [['HH', 'HH 高高限'], ['H', 'H 高限'], ['L', 'L 低限'], ['LL', 'LL 低低限']];
+
+// 字段语法：k=键 l=标签 t=类型(txt/num/area/sel/bool/tag/var) o=选项 d=默认 ph=占位 tip=说明
+const DEFS = {
+  /* ---------------- 设备 ---------------- */
+  deviceInput: {
+    label: '事件发生或状态更新', cat: 'device',
+    ins: [], outs: [['out', '事件']],
+    fs: [
+      { k: 'tag', l: '位号', t: 'tag', tip: '选择要监听的位号' },
+      { k: 'mode', l: '触发方式', t: 'sel', o: [['update', '状态更新即触发'], ['match', '满足条件时触发']], d: 'update' },
+      { k: 'op', l: '条件', t: 'sel', o: OPS, d: '=' },
+      { k: 'value', l: '比较值', t: 'txt' },
+      { k: 'msg', l: '推送文案', t: 'area', ph: '【设备报警】\n规则：{rule}\n触发值：{value}\n时间：{time}' },
+      { k: 'level', l: '报警级别', t: 'sel', o: LEVELS, d: 'HH' },
+      { k: 'mail', l: '邮件推送', t: 'bool', d: false }
+    ],
+    sum: (n) => n.tag ? ('当 ' + n.tag + (n.mode === 'match' && n.op ? ' ' + opText(n.op) + ' ' + (n.value || '') : ' 变化时')) : '未选择位号'
+  },
+  deviceGet: {
+    label: '查询当前状态', cat: 'device',
+    ins: [], outs: [['out', '值']],
+    fs: [
+      { k: 'tag', l: '位号', t: 'tag' },
+      { k: 'op', l: '判断条件', t: 'sel', o: OPS, d: '' },
+      { k: 'value', l: '比较值', t: 'txt' }
+    ],
+    sum: (n) => n.tag ? (n.op ? (n.tag + ' ' + opText(n.op) + ' ' + (n.value || '')) : ('读取 ' + n.tag)) : '未选择位号'
+  },
+  deviceOutput: {
+    label: '执行操作', cat: 'device',
+    ins: [['in', '触发']], outs: [['out', '完成']],
+    fs: [
+      { k: 'label', l: '操作说明', t: 'txt', ph: '如：现场声光报警' },
+      { k: 'mode', l: '执行方式', t: 'sel', o: [['notify', '报警弹窗 + 推送'], ['log', '仅记录日志']], d: 'notify' },
+      { k: 'msg', l: '推送文案', t: 'area', ph: '【设备报警】\n规则：{rule}\n触发值：{value}\n时间：{time}' },
+      { k: 'level', l: '报警级别', t: 'sel', o: LEVELS, d: 'HH' },
+      { k: 'mail', l: '邮件推送', t: 'bool', d: false },
+      { k: 'tip', l: '', t: 'note', tip: '本系统不下发实际设备控制指令：触发后按现有报警弹窗与邮件链路通知。' }
+    ],
+    sum: (n) => n.label ? n.label : (n.mode === 'log' ? '记录日志' : '报警弹窗 + 推送')
+  },
+  /* ---------------- 时间 ---------------- */
+  alarmClock: {
+    label: '定时', cat: 'time',
+    ins: [], outs: [['out', '到点']],
+    fs: [
+      { k: 'time', l: '时间（HH:MM）', t: 'txt', ph: '08:30', tip: '多个时间用英文逗号分隔，如 08:30,12:00,18:00' },
+      { k: 'days', l: '星期', t: 'txt', ph: '1,2,3,4,5', tip: '1=周一 … 7=周日；留空表示每天' }
+    ],
+    sum: (n) => (n.time ? ('每天 ' + n.time + ' 触发') : '未设置时间')
+  },
+  timeRange: {
+    label: '时间段', cat: 'time',
+    ins: [], outs: [['out', '在时间段内']],
+    fs: [
+      { k: 'start', l: '开始', t: 'txt', ph: '08:00' },
+      { k: 'end', l: '结束', t: 'txt', ph: '18:00' },
+      { k: 'days', l: '生效星期', t: 'txt', ph: '1,2,3,4,5' },
+      { k: 'invert', l: '取反（时间段外）', t: 'bool', d: false }
+    ],
+    sum: (n) => n.start && n.end ? ((n.invert ? '不在 ' : '在 ') + n.start + ' ~ ' + n.end) : '未设置时间段'
+  },
+  delay: {
+    label: '延时', cat: 'time',
+    ins: [['in', '触发']], outs: [['out', '延时后']],
+    fs: [
+      { k: 'seconds', l: '延时（秒）', t: 'num', d: 10 },
+      { k: 'delayMode', l: '延时方式', t: 'sel', d: 'fire',
+        o: [['fire', '触发后延时 N 秒执行一次'], ['hold', '持续满足 N 秒后执行'], ['off', '触发后保持 N 秒']],
+        tip: '旧版节点保持原有语义（持续满足 N 秒）' }
+    ],
+    sum: (n) => '延时 ' + (n.seconds || 0) + ' 秒'
+  },
+  statusLast: {
+    label: '状态维持了一段时间', cat: 'time',
+    ins: [['in', '条件']], outs: [['out', '已维持']],
+    fs: [
+      { k: 'tag', l: '位号（可选）', t: 'tag', tip: '留空则判断上游条件，否则判断该位号' },
+      { k: 'op', l: '条件', t: 'sel', o: OPS, d: '' },
+      { k: 'value', l: '比较值', t: 'txt' },
+      { k: 'seconds', l: '维持（秒）', t: 'num', d: 60 }
+    ],
+    sum: (n) => (n.tag ? n.tag + ' ' : '条件 ') + '维持 ' + (n.seconds || 0) + ' 秒'
+  },
+  eventSequence: {
+    label: '事件先后发生', cat: 'time',
+    ins: [['in1', '事件1'], ['in2', '事件2']], outs: [['out', '先后成立']],
+    fs: [
+      { k: 'window', l: '间隔窗口（秒）', t: 'num', d: 60, tip: '事件1 发生后 N 秒内事件2 发生才算成立' }
+    ],
+    sum: (n) => '事件1 后 ' + (n.window || 0) + ' 秒内事件2 发生'
+  },
+  /* ---------------- 流程 ---------------- */
+  condition: {
+    label: '当-如果-就', cat: 'flow',
+    ins: [['in', '当'], ['cond', '如果']], outs: [['out', '就']],
+    fs: [
+      { k: 'tip', l: '', t: 'note', tip: '「当」收到事件、「如果」条件成立时，向下游输出一拍。' }
+    ],
+    sum: () => '当事件发生且条件成立'
+  },
+  loop: {
+    label: '循环', cat: 'flow',
+    ins: [['in', '启动']], outs: [['out', '每轮']],
+    fs: [
+      { k: 'seconds', l: '循环间隔（秒）', t: 'num', d: 60 },
+      { k: 'times', l: '循环次数', t: 'num', d: 0, tip: '0 表示不限次数；输入由成立变为不成立时重新计数' }
+    ],
+    sum: (n) => ('每 ' + (n.seconds || 0) + ' 秒一次' + (n.times ? '，最多 ' + n.times + ' 次' : ''))
+  },
+  onlyNTimes: {
+    label: '最多触发指定次数', cat: 'flow',
+    ins: [['in', '输入'], ['in2', '复位']], outs: [['out', '允许']],
+    fs: [
+      { k: 'times', l: '最大次数', t: 'num', d: 1 },
+      { k: 'tip', l: '', t: 'note', tip: '超过次数后不再向下游输出，直到「复位」端口被触发。' }
+    ],
+    sum: (n) => '最多 ' + (n.times || 1) + ' 次'
+  },
+  counter: {
+    label: '达到指定次数时', cat: 'flow',
+    ins: [['in', '计数'], ['in2', '复位']], outs: [['out', '达标']],
+    fs: [
+      { k: 'target', l: '目标次数', t: 'num', d: 3 },
+      { k: 'window', l: '统计窗口（秒）', t: 'num', d: 0, tip: '0 表示不限窗口；超出窗口则重新计数' }
+    ],
+    sum: (n) => '累计达到 ' + (n.target || 1) + ' 次' + (n.window ? '（' + n.window + ' 秒内）' : '')
+  },
+  modeSwitch: {
+    label: '模式切换', cat: 'flow',
+    ins: [['in', '切换']], outs: [['out', '命中模式']],
+    fs: [
+      { k: 'modes', l: '模式列表', t: 'txt', d: '回家,离家,睡眠', tip: '英文逗号分隔，每来一次「切换」切换到下一个模式' },
+      { k: 'mode', l: '当前模式序号', t: 'num', d: 0, tip: '0 起算，用于外部改模式 / 记忆当前所处模式' }
+    ],
+    sum: (n) => '模式：' + (n.modes || '') + '（当前第 ' + ((Number(n.mode) || 0) + 1) + ' 个）'
+  },
+  /* ---------------- 逻辑 ---------------- */
+  signalOr: {
+    label: '当任一事件发生', cat: 'logic',
+    ins: [['in1', '事件1'], ['in2', '事件2'], ['in3', '事件3']], outs: [['out', '任一发生']],
+    fs: [{ k: 'tip', l: '', t: 'note', tip: '任一路出现上升沿（事件发生）即向下游输出一拍。' }],
+    sum: () => '任一事件发生即触发'
+  },
+  logicOr: {
+    label: '满足任一条件', cat: 'logic',
+    ins: [['in1', '条件1'], ['in2', '条件2'], ['in3', '条件3']], outs: [['out', '任一满足']],
+    fs: [], sum: () => '任一条件满足'
+  },
+  logicAnd: {
+    label: '满足全部条件', cat: 'logic',
+    ins: [['in1', '条件1'], ['in2', '条件2'], ['in3', '条件3']], outs: [['out', '全部满足']],
+    fs: [], sum: () => '全部条件满足'
+  },
+  logicNot: {
+    label: '状态取反', cat: 'logic',
+    ins: [['in', '输入']], outs: [['out', '取反']],
+    fs: [], sum: () => '输入取反'
+  },
+  /* ---------------- 其他 ---------------- */
+  register: {
+    label: '自定义状态', cat: 'other',
+    ins: [['in', '置位'], ['in2', '复位']], outs: [['out', '状态']],
+    fs: [{ k: 'label', l: '状态名', t: 'txt', ph: '如：夜间布防' }],
+    sum: (n) => n.label ? ('状态：' + n.label) : '自定义状态（置位后保持）'
+  },
+  onLoad: {
+    label: '本自动化启用时', cat: 'other',
+    ins: [], outs: [['out', '启动']],
+    fs: [{ k: 'tip', l: '', t: 'note', tip: '规则启用后保持成立：可直接驱动「循环」；需要只执行一次时接「当-如果-就」取上升沿。' }],
+    sum: () => '本自动化启用期间保持成立'
+  },
+  /* ---------------- 变量 ---------------- */
+  deviceInputSetVar: {
+    label: '设备触发赋值', cat: 'variable',
+    ins: [], outs: [['out', '已赋值']],
+    fs: [
+      { k: 'tag', l: '位号', t: 'tag' },
+      { k: 'op', l: '条件', t: 'sel', o: OPS, d: '' },
+      { k: 'value', l: '比较值', t: 'txt' },
+      { k: 'varName', l: '目标变量', t: 'var' },
+      { k: 'assignFrom', l: '赋值来源', t: 'sel', o: [['device', '位号当前值'], ['const', '固定值']], d: 'device' },
+      { k: 'constValue', l: '固定值', t: 'txt' }
+    ],
+    sum: (n) => (n.tag ? n.tag : '设备') + ' → ' + (n.varName || '变量')
+  },
+  deviceGetSetVar: {
+    label: '查询设备并赋值', cat: 'variable',
+    ins: [['in', '触发']], outs: [['out', '已赋值']],
+    fs: [
+      { k: 'tag', l: '位号', t: 'tag' },
+      { k: 'varName', l: '目标变量', t: 'var' }
+    ],
+    sum: (n) => '读取 ' + (n.tag || '位号') + ' → ' + (n.varName || '变量')
+  },
+  varChange: {
+    label: '变量值更新', cat: 'variable',
+    ins: [], outs: [['out', '已更新']],
+    fs: [
+      { k: 'name', l: '变量', t: 'var' },
+      { k: 'op', l: '条件', t: 'sel', o: OPS, d: '' },
+      { k: 'value', l: '比较值', t: 'txt' }
+    ],
+    sum: (n) => (n.name || '变量') + ' 更新' + (n.op ? '（' + opText(n.op) + ' ' + (n.value || '') + '）' : '')
+  },
+  varGet: {
+    label: '查询变量值', cat: 'variable',
+    ins: [], outs: [['out', '值']],
+    fs: [
+      { k: 'name', l: '变量', t: 'var' },
+      { k: 'op', l: '判断条件', t: 'sel', o: OPS, d: '' },
+      { k: 'value', l: '比较值', t: 'txt' }
+    ],
+    sum: (n) => (n.name || '变量') + (n.op ? ' ' + opText(n.op) + ' ' + (n.value || '') : '')
+  },
+  varSetNumber: {
+    label: '数值运算', cat: 'variable',
+    ins: [['in', '触发']], outs: [['out', '已写入']],
+    fs: [
+      { k: 'name', l: '目标变量', t: 'var' },
+      { k: 'fromVar', l: '左值变量（可选）', t: 'var', tip: '留空则使用下面的左值常量' },
+      { k: 'a', l: '左值常量', t: 'txt', d: '0' },
+      { k: 'op', l: '运算符', t: 'sel', d: '+',
+        o: [['+', '＋'], ['-', '－'], ['*', '×'], ['/', '÷'], ['set', '直接赋值']] },
+      { k: 'bVar', l: '右值变量（可选）', t: 'var' },
+      { k: 'b', l: '右值常量', t: 'txt', d: '1' }
+    ],
+    sum: (n) => (n.name || '变量') + ' = ' + (n.fromVar || n.a || '0') + ' ' + (n.op || '+') + ' ' + (n.bVar || n.b || '1')
+  },
+  varSetString: {
+    label: '文本拼接', cat: 'variable',
+    ins: [['in', '触发']], outs: [['out', '已写入']],
+    fs: [
+      { k: 'name', l: '目标变量', t: 'var' },
+      { k: 'template', l: '拼接模板', t: 'area', d: '温度 {tag:TI-1001} 于 {time}',
+        tip: '支持 {变量名}、{tag:位号}、{value}（上游值）、{time}' }
+    ],
+    sum: (n) => (n.name || '变量') + ' = ' + (n.template || '模板')
+  }
+};
+
+const NEW_TYPES = {};
+Object.keys(DEFS).forEach((k) => { NEW_TYPES[k] = DEFS[k].label; });
+const SIDE_GROUPS = [
+  ['device', ['deviceInput', 'deviceGet', 'deviceOutput']],
+  ['time', ['alarmClock', 'timeRange', 'delay', 'statusLast', 'eventSequence']],
+  ['flow', ['condition', 'loop', 'onlyNTimes', 'counter', 'modeSwitch']],
+  ['logic', ['signalOr', 'logicOr', 'logicAnd', 'logicNot']],
+  ['other', ['register', 'onLoad']],
+  ['variable', ['deviceInputSetVar', 'deviceGetSetVar', 'varChange', 'varGet', 'varSetNumber', 'varSetString']]
+];
+
+/* ============================================================
+ * 二、通用工具
+ * ============================================================ */
+function $(id) { return document.getElementById(id); }
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function uid(p) { return (p || 'n') + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function opText(op) {
+  const m = { '==': '=', '!=': '≠', '>': '>', '<': '<', '>=': '≥', '<=': '≤' };
+  return m[op] || op;
+}
+function toast(msg) {
+  // 轻量提示：复用状态栏，避免额外 DOM 依赖
+  const sb = $('statusbar');
+  if (!sb) return;
+  let box = $('cvToast');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'cvToast';
+    box.style.cssText = 'position:fixed;left:50%;top:70px;transform:translateX(-50%);' +
+      'background:rgba(0,0,0,.78);color:#fff;font-size:12px;padding:7px 14px;border-radius:6px;z-index:99999';
+    document.body.appendChild(box);
+  }
+  box.textContent = msg;
+  box.style.display = 'block';
+  clearTimeout(box._t);
+  box._t = setTimeout(function () { box.style.display = 'none'; }, 2200);
+}
+
+function normalizeTags(r) {
+  const arr = Array.isArray(r) ? r : ((r && (r.list || r.tags || r.points)) || []);
+  return arr.map(function (t) {
+    if (typeof t === 'string') return { tag: t, desc: '', unit: '' };
+    return {
+      tag: (t && (t.tag || t.name || t.id)) || '',
+      desc: (t && (t.desc || t.description || '')) || '',
+      unit: (t && t.unit) || ''
+    };
+  }).filter(function (t) { return t.tag; });
+}
+function normalizeVars(r) {
+  const arr = Array.isArray(r) ? r : ((r && (r.list || r.vars || r.items)) || []);
+  return arr.map(function (v) {
+    if (typeof v === 'string') return v;
+    return (v && (v.name || v.varName || v.id)) || '';
+  }).filter(Boolean);
+}
+
+/* ============================================================
+ * 三、规则读写（沿用 canvas:load / canvas:save，旧规则原样保留）
+ * ============================================================ */
+function curRule() {
+  for (let i = 0; i < CS.rules.length; i++) if (CS.rules[i].id === CS.curId) return CS.rules[i];
+  return null;
+}
+
+function newRule() {
+  const idx = CS.rules.length + 1;
   return {
-    id: 'cr_' + Date.now(),
-    name: '规则' + (CS.rules.length + 1),
+    id: uid('rule'),
+    name: String(idx),
     enabled: true,
+    model: 'signal',
     duration: 0,
+    hold: 'timed',
+    holdSeconds: 15,
     nodes: [],
     links: []
   };
 }
-function currentRule(){ return CS.rules.find(r => r.id === CS.currentId); }
-function nodeById(id){ return currentRule()?.nodes.find(n => n.id === id); }
 
-const NODE_META = {
-  // 数据源
-  tag:       { label: '位号取值', icon: '📈' },
-  bool:      { label: '布尔位号', icon: '🔘' },
-  tagStatus: { label: '位号质量', icon: '✔' },
-  constN:    { label: '常量',     icon: '#' },
-  // 判断
-  compare:   { label: '比较',     icon: '⇄' },
-  range:     { label: '区间',     icon: '↔' },
-  deviation: { label: '偏差',     icon: '≶' },
-  rate:      { label: '变化率',   icon: '↗' },
-  textCmp:   { label: '文本判断', icon: '🔤' },
-  // 逻辑
-  logic:     { label: '逻辑',     icon: '⋀' },
-  not:       { label: '非',       icon: '!' },
-  xor:       { label: '异或',     icon: '⊕' },
-  // 流程
-  if:        { label: '条件分支', icon: '◈' },
-  merge:     { label: '合并分支', icon: '⧉' },
-  // 时间
-  duration:  { label: '持续时间', icon: '⏱' },
-  delay:     { label: '延时',     icon: '⏳' },
-  hold:      { label: '保持',     icon: '⏸' },
-  pulse:     { label: '脉冲',     icon: '⚡' },
-  timeRange: { label: '时间段',   icon: '🕐' },
-  // 状态
-  latch:     { label: '锁存',     icon: '🔒' },
-  toggle:    { label: '翻转',     icon: '🔁' },
-  edge:      { label: '边沿',     icon: '📐' },
-  counter:   { label: '计数',     icon: '🔢' },
-  // 运算
-  arith:     { label: '算术运算', icon: '±' },
-  mathFn:    { label: '数学函数', icon: 'ƒ' },
-  scale:     { label: '线性映射', icon: '⤢' },
-  stat:      { label: '窗口统计', icon: 'Σ' },
-  // 变量
-  varGet:    { label: '读变量',   icon: 'R' },
-  varSet:    { label: '写变量',   icon: 'W' },
-  // 触发
-  trigger:   { label: '自定义通知', icon: '🔔' }
-};
-
-// ============================================================
-// 加载
-// ============================================================
-async function canvasLoad(){
+async function canvasLoad() {
   try {
-    const tagData = await window.api.loadTags();
-    CS.tags = (tagData.points || []).map(p => p.tag);
-    CS.tagMap = {};
-    (tagData.points || []).forEach(p => {
-      CS.tagMap[p.tag] = { desc: p.desc || '', unit: p.unit || '' };
-    });
-  } catch (e) { CS.tags = []; CS.tagMap = {}; }
+    const r = await window.api.canvasLoad();
+    CS.rules = (r && r.rules) || [];
+  } catch (e) {
+    CS.rules = [];
+  }
+  if (!CS.rules.length) CS.rules = [newRule()];
+  if (!CS.rules.some(function (x) { return x.id === CS.curId; })) {
+    CS.curId = CS.rules[CS.rules.length - 1].id;
+  }
+  CS.sel = null;
+  CS.view = { x: 0, y: 0, z: 1 };
+  renderAll();
+}
 
+async function canvasSave() {
+  const r = curRule();
+  if (!r) return;
+  r.name = ($('canvasRuleName') && $('canvasRuleName').value) || r.name;
   try {
-    const vr = await window.api.loadVars();
-    CS.varNames = (vr.vars || []).map(v => v.name);
-  } catch (e) { CS.varNames = []; }
-
-  const r = await window.api.canvasLoad();
-  CS.rules = r.rules || [];
-  if (!CS.rules.length) CS.rules.push(newCanvasRule());
-  CS.currentId = CS.rules[0].id;
-  renderRuleSelect();
-  renderCanvas();
+    const res = await window.api.canvasSave(CS.rules);
+    if (res && res.ok === false) toast('保存失败：' + (res.error || '未知错误'));
+    else toast('已保存：' + (r.name || r.id));
+  } catch (e) {
+    toast('保存失败：' + e.message);
+  }
+  renderTabs();
 }
 
-async function canvasSave(){
-  syncPropsToRule();
-  const r = await window.api.canvasSave(CS.rules);
-  if (r.ok) await msgBox('画布规则已保存。', '保存成功');
-}
+window.canvasLoad = canvasLoad;
+window.canvasSave = canvasSave;
 
-// ============================================================
-// 位号模糊搜索
-// ============================================================
-function fuzzyMatchTags(query, limit){
-  limit = limit || 30;
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) return CS.tags.slice(0, limit);
-  const out = [];
-  for (let i = 0; i < CS.tags.length && out.length < limit; i++){
-    const t = CS.tags[i];
-    if (t.toLowerCase().indexOf(q) >= 0) out.push(t);
-  }
-  if (out.length < limit){
-    for (let i = 0; i < CS.tags.length && out.length < limit; i++){
-      const t = CS.tags[i];
-      if (out.indexOf(t) >= 0) continue;
-      const info = CS.tagMap[t] || {};
-      if (info.desc && info.desc.toLowerCase().indexOf(q) >= 0) out.push(t);
-    }
-  }
-  return out;
-}
-
-function tagDropdownHtml(query){
-  const list = fuzzyMatchTags(query, 30);
-  if (!CS.tags.length){
-    return '<div class="tag-dropdown-empty">尚未导入位号，请到「规则配置」先导入</div>';
-  }
-  if (!list.length){
-    return '<div class="tag-dropdown-empty">未匹配到位号</div>';
-  }
-  return list.map(t => {
-    const info = CS.tagMap[t] || {};
-    return '<div class="tag-dropdown-item" data-tag="' + esc(t) + '">' +
-      '<div class="td-tag">' + esc(t) + '</div>' +
-      (info.desc || info.unit
-        ? '<div class="td-meta">' + esc(info.desc || '') +
-          (info.unit ? ' · ' + esc(info.unit) : '') + '</div>'
-        : '') +
-    '</div>';
+/* ============================================================
+ * 四、顶部规则标签栏
+ * ============================================================ */
+function renderTabs() {
+  const box = $('ruleTabs');
+  if (!box) return;
+  box.innerHTML = CS.rules.map(function (r) {
+    const on = r.id === CS.curId ? ' selected' : '';
+    return '<div class="app-header-menu-tab' + on + '" data-rid="' + esc(r.id) + '">' +
+      '<label title="' + esc(r.name || r.id) + '">' + esc(r.name || r.id) + '</label>' +
+      '<span class="tab-close" data-close="' + esc(r.id) + '" title="删除规则">' +
+      '<svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor"><path d="M13.536 7.596a.8.8 0 1 0-1.132-1.132L10 8.87 7.596 6.464a.8.8 0 1 0-1.132 1.132L8.87 10l-2.405 2.404a.8.8 0 1 0 1.132 1.132L10 11.13l2.404 2.405a.8.8 0 1 0 1.132-1.132L11.13 10l2.405-2.404Z"></path></svg>' +
+      '</span></div>';
   }).join('');
 }
 
-function bindTagPicker(input, node){
-  let dropdown = null;
-  const closeDropdown = () => {
-    if (dropdown && dropdown.parentNode) dropdown.parentNode.removeChild(dropdown);
-    dropdown = null;
-  };
-  const pickTag = (tag) => {
-    input.value = tag;
-    node.tag = tag;
-    const info = CS.tagMap[tag] || {};
-    if (info.desc && !node.desc) node.desc = info.desc;
-    if (info.unit && !node.unit) node.unit = info.unit;
-    closeDropdown();
-    const host = input.closest('.cnode');
-    if (host){
-      const kind = host.querySelector('.cnode-hd .kind');
-      if (kind) kind.textContent = tag.length > 12 ? tag.slice(-12) : tag;
-      const descEl = host.querySelector('.n-desc');
-      if (descEl && info.desc) descEl.textContent = info.desc;
-    }
-  };
-  const bindItems = () => {
-    if (!dropdown) return;
-    dropdown.querySelectorAll('.tag-dropdown-item').forEach(item => {
-      item.addEventListener('mousedown', (ev) => {
-        ev.preventDefault(); ev.stopPropagation();
-        pickTag(item.getAttribute('data-tag'));
-      });
-    });
-  };
-  const openDropdown = () => {
-    closeDropdown();
-    dropdown = document.createElement('div');
-    dropdown.className = 'tag-dropdown';
-    dropdown.innerHTML = tagDropdownHtml(input.value);
-    const host = input.closest('.cnode');
-    if (!host) return;
-    host.appendChild(dropdown);
-    const r = input.getBoundingClientRect();
-    const hr = host.getBoundingClientRect();
-    dropdown.style.left = (r.left - hr.left) + 'px';
-    dropdown.style.top  = (r.bottom - hr.top + 3) + 'px';
-    dropdown.style.width = r.width + 'px';
-    bindItems();
-  };
-  input.addEventListener('focus', openDropdown);
-  input.addEventListener('input', () => {
-    if (!dropdown) openDropdown();
-    else { dropdown.innerHTML = tagDropdownHtml(input.value); bindItems(); }
-  });
-  input.addEventListener('blur', () => { setTimeout(closeDropdown, 150); });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDropdown(); });
-}
-
-// ============================================================
-// 规则下拉 / 属性框
-// ============================================================
-function renderRuleSelect(){
-  const sel = document.getElementById('canvasRuleSelect');
-  sel.innerHTML = CS.rules.map(r =>
-    '<option value="' + r.id + '">' + esc(r.name) + (r.enabled ? '' : '（停用）') + '</option>'
-  ).join('');
-  sel.value = CS.currentId;
-}
-
-function renderProps(rule){
-  const p = document.getElementById('canvasProps');
-  if (!rule){ p.innerHTML = ''; return; }
-  const hold = rule.hold || 'auto';
-  p.innerHTML =
-    '<label>规则名</label><input type="text" id="crName" value="' + esc(rule.name) + '">' +
-    '<label>持续(s)</label><input type="number" id="crDur" value="' + (rule.duration || 0) + '" min="0">' +
-    '<label>报警保持</label><select id="crHold">' +
-      '<option value="auto"' + (hold === 'auto' ? ' selected' : '') + '>自动复位（条件恢复即消除）</option>' +
-      '<option value="timed"' + (hold === 'timed' ? ' selected' : '') + '>延时复位（恢复后保持 N 秒）</option>' +
-      '<option value="latch"' + (hold === 'latch' ? ' selected' : '') + '>保持到人工确认</option>' +
-    '</select>' +
-    '<label>保持(s)</label><input type="number" id="crHoldSec" value="' + (rule.holdSeconds || 0) + '" min="0">' +
-    '<label><input type="checkbox" id="crEn"' + (rule.enabled ? ' checked' : '') + '> 启用</label>' +
-    '<div class="n-tip">条件成立只提醒一次；条件恢复后再次成立才会再次提醒。保持到人工确认需在报警弹窗点「确认复位」。</div>';
-  document.getElementById('crName').addEventListener('change', e => {
-    rule.name = e.target.value.trim() || rule.name;
-    renderRuleSelect();
-  });
-  document.getElementById('crDur').addEventListener('change', e => {
-    rule.duration = Number(e.target.value) || 0;
-  });
-  document.getElementById('crHold').addEventListener('change', e => {
-    rule.hold = e.target.value;
-  });
-  document.getElementById('crHoldSec').addEventListener('change', e => {
-    rule.holdSeconds = Number(e.target.value) || 0;
-  });
-  document.getElementById('crEn').addEventListener('change', e => {
-    rule.enabled = e.target.checked;
-    renderRuleSelect();
-  });
-}
-
-function syncPropsToRule(){
-  const rule = currentRule();
-  if (!rule) return;
-  const n = document.getElementById('crName');
-  if (n) rule.name = n.value.trim() || rule.name;
-  const d = document.getElementById('crDur');
-  if (d) rule.duration = Number(d.value) || 0;
-  const h = document.getElementById('crHold');
-  if (h) rule.hold = h.value;
-  const hs = document.getElementById('crHoldSec');
-  if (hs) rule.holdSeconds = Number(hs.value) || 0;
-  const e = document.getElementById('crEn');
-  if (e) rule.enabled = e.checked;
-}
-
-// ============================================================
-// 渲染画布
-// ============================================================
-function renderCanvas(){
-  const rule = currentRule();
-  if (!rule) return;
-  renderRuleSelect();
-  renderProps(rule);
-
-  const nodesBox = document.getElementById('canvasNodes');
-  nodesBox.innerHTML = rule.nodes.map(n => nodeHtml(n)).join('');
-
-  rule.nodes.forEach(n => {
-    const el = nodesBox.querySelector('.cnode[data-id="' + n.id + '"]');
-    if (!el) return;
-    bindNodeDrag(n, el);
-    if (n.type === 'tag' || n.type === 'bool' || n.type === 'tagStatus'){
-      const input = el.querySelector('input[data-field="tag"]');
-      if (input) bindTagPicker(input, n);
-    }
-  });
-
-  nodesBox.querySelectorAll('.cnode-del').forEach(d => {
-    d.addEventListener('click', e => {
+function bindTabs() {
+  const box = $('ruleTabs');
+  if (!box) return;
+  box.addEventListener('click', function (e) {
+    const closeBtn = e.target.closest ? e.target.closest('[data-close]') : null;
+    if (closeBtn) {
       e.stopPropagation();
-      const id = d.getAttribute('data-del');
-      rule.nodes = rule.nodes.filter(n => n.id !== id);
-      rule.links = rule.links.filter(l => l.from !== id && l.to !== id);
-      renderCanvas();
-    });
+      delRule(closeBtn.getAttribute('data-close'));
+      return;
+    }
+    const tab = e.target.closest ? e.target.closest('.app-header-menu-tab') : null;
+    if (!tab) return;
+    const rid = tab.getAttribute('data-rid');
+    if (rid === CS.curId) return;
+    const r = curRule();
+    if (r && $('canvasRuleName')) r.name = $('canvasRuleName').value;
+    CS.curId = rid;
+    CS.sel = null;
+    renderAll();
   });
+  const add = $('btnRuleAdd');
+  if (add) add.addEventListener('click', function () {
+    const r = curRule();
+    if (r && $('canvasRuleName')) r.name = $('canvasRuleName').value;
+    const nr = newRule();
+    CS.rules.push(nr);
+    CS.curId = nr.id;
+    CS.sel = null;
+    renderAll();
+    toast('已新建规则（记得点「保存」）');
+  });
+  const more = $('btnAppMore');
+  if (more) more.addEventListener('click', function (e) {
+    e.stopPropagation();
+    toggleMenu($('helpMenu'));
+  });
+}
 
-  nodesBox.querySelectorAll('.c-port-out').forEach(p => {
-    p.addEventListener('mousedown', e => {
-      e.stopPropagation();
+function delRule(rid) {
+  if (CS.rules.length <= 1) { toast('至少保留一个规则'); return; }
+  const r = CS.rules.filter(function (x) { return x.id === rid; })[0];
+  showConfirm('删除规则', '将删除规则「' + ((r && r.name) || rid) + '」及其全部节点与连线，是否继续？', function () {
+    CS.rules = CS.rules.filter(function (x) { return x.id !== rid; });
+    if (CS.curId === rid) CS.curId = CS.rules[CS.rules.length - 1].id;
+    CS.sel = null;
+    renderAll();
+    canvasSave();
+  });
+}
+
+/* ============================================================
+ * 五、左侧内容块库 + 拖拽创建
+ * ============================================================ */
+function renderSide() {
+  const list = $('eleList');
+  if (!list) return;
+  let html = '';
+  SIDE_GROUPS.forEach(function (g) {
+    const color = CAT_COLOR[g[0]];
+    html += '<div class="graph-ele-item graph-ele-condition">' +
+      '<div class="ele-title">' + esc(CAT_NAME[g[0]]) + '</div><div class="ele-list">';
+    g[1].forEach(function (t) {
+      html += '<div class="ele-item" data-type="' + esc(t) + '" data-id="cardBox.' + esc(t) + '.0">' +
+        '<i class="edot" style="background:' + color + '"></i>' +
+        esc(NEW_TYPES[t]) + '</div>';
+    });
+    html += '</div></div>';
+  });
+  list.innerHTML = html;
+
+}
+
+function bindSide() {
+  const list = $('eleList');
+  if (list) {
+    list.addEventListener('mousedown', function (e) {
+      const item = e.target.closest ? e.target.closest('.ele-item') : null;
+      if (!item) return;
       e.preventDefault();
-      const fromId = p.getAttribute('data-node');
-      const fromPort = p.getAttribute('data-port') || 'out';
-      startLinkDrag(fromId, fromPort, p);
+      startDragCreate(item, item.getAttribute('data-type'));
     });
-  });
-
-  nodesBox.querySelectorAll('.cnode input, .cnode select, .cnode textarea').forEach(el => {
-    if (el.getAttribute('data-field') === 'tag') return;
-    el.addEventListener('change', () => {
-      const id = el.getAttribute('data-nid');
-      const field = el.getAttribute('data-field');
-      const n = nodeById(id);
-      if (!n) return;
-      const t = el.getAttribute('data-ntype');
-      if (el.type === 'checkbox'){
-        n[field] = el.checked;
-      } else if (t === 'num' || el.type === 'number'){
-        n[field] = el.value === '' ? '' : Number(el.value);
-      } else {
-        n[field] = el.value;
-      }
-      if (n.type === 'varSet' && field === 'mode') renderCanvas();
-      if (n.type === 'constN' && field === 'valueType') renderCanvas();
-      if (n.type === 'mathFn' && field === 'fn') renderCanvas();
-      if (n.type === 'trigger' && field === 'msg') renderCanvas();
-    });
-  });
-
-  setTimeout(updateLinks, 0);
-}
-
-// ============================================================
-// 拖拽连线
-// ============================================================
-// 连线层固定分两层：静态连线层 + 临时虚线层。重绘静态连线时不再整块
-// 重写 svg.innerHTML，临时虚线单独放置，避免拖拽中/结束后出现残留。
-function linkLayers(){
-  const svg = document.getElementById('canvasLinks');
-  if (!svg) return null;
-  let linkLayer = svg.querySelector('#linkLayer');
-  let rubberLayer = svg.querySelector('#rubberLayer');
-  if (!linkLayer || !rubberLayer){
-    svg.innerHTML = '<g id="linkLayer"></g><g id="rubberLayer"></g>';
-    linkLayer = svg.querySelector('#linkLayer');
-    rubberLayer = svg.querySelector('#rubberLayer');
   }
-  return { linkLayer: linkLayer, rubberLayer: rubberLayer };
 }
 
-// 清除拖拽时画的蓝色虚线（未连成时不该留痕）
-function clearRubber(){
-  const el = document.getElementById('rubberLine');
-  if (el && el.parentNode) el.parentNode.removeChild(el);
-}
-
-// 结束连线态：清虚线、清高亮、清 hover，可重复调用
-function endLinking(){
-  CS.linking = null;
-  clearRubber();
-  const area = document.getElementById('canvasArea');
-  if (area) area.classList.remove('linking');
-  document.querySelectorAll('.c-port-in.hover-target').forEach(el => el.classList.remove('hover-target'));
-  document.querySelectorAll('.c-port-out.active').forEach(el => el.classList.remove('active'));
-}
-
-function startLinkDrag(fromId, fromPort, portEl){
-  const container = document.getElementById('canvasNodes');
-  const cr = container.getBoundingClientRect();
-  const pr = portEl.getBoundingClientRect();
-  const from = {
-    x: pr.left - cr.left + pr.width / 2,
-    y: pr.top - cr.top + pr.height / 2
-  };
-
-  endLinking();                                   // 先收尾上一次可能残留的连线态
-  CS.linking = { fromId, fromPort, fromPos: from, cur: from };
-  portEl.classList.add('active');
-  document.getElementById('canvasArea').classList.add('linking');
-
-  const layers = linkLayers();
-  let rubber = null;
-  if (layers){
-    rubber = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    rubber.setAttribute('id', 'rubberLine');
-    rubber.setAttribute('class', 'rubber-line');
-    layers.rubberLayer.appendChild(rubber);
-  }
-
-  const drawRubber = () => {
-    if (!rubber || !CS.linking) return;
-    const p1 = CS.linking.fromPos;
-    const p2 = CS.linking.cur;
-    const dx = Math.max(60, Math.abs(p2.x - p1.x) / 2);
-    const d = 'M ' + p1.x + ' ' + p1.y +
-              ' C ' + (p1.x + dx) + ' ' + p1.y + ', ' +
-                       (p2.x - dx) + ' ' + p2.y + ', ' +
-                       p2.x + ' ' + p2.y;
-    rubber.setAttribute('d', d);
-  };
-  drawRubber();
-
-  const onMove = ev => {
-    if (!CS.linking) return;
-    const r = container.getBoundingClientRect();
-    CS.linking.cur = { x: ev.clientX - r.left, y: ev.clientY - r.top };
-    drawRubber();
-    document.querySelectorAll('.c-port-in.hover-target').forEach(el => el.classList.remove('hover-target'));
-    const target = document.elementFromPoint(ev.clientX, ev.clientY);
-    if (target && target.classList.contains('c-port-in')){
-      target.classList.add('hover-target');
+function startDragCreate(item, type) {
+  const label = NEW_TYPES[type] || type;
+  let ghost = null;
+  const mv = function (e) {
+    if (!ghost) {
+      ghost = document.createElement('div');
+      ghost.className = 'drag-ghost';
+      ghost.textContent = label;
+      ($('page-canvas') || document.body).appendChild(ghost);
     }
+    ghost.style.left = (e.clientX + 12) + 'px';
+    ghost.style.top = (e.clientY + 10) + 'px';
   };
-
-  const onUp = ev => {
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-    window.removeEventListener('blur', onCancel);
-    const target = document.elementFromPoint(ev.clientX, ev.clientY);
-    const okPort = (target && target.classList.contains('c-port-in')) ? target : null;
-    endLinking();                                 // 关键：先彻底清掉虚线再重绘
-    if (okPort){
-      const toId = okPort.getAttribute('data-node');
-      const toPort = okPort.getAttribute('data-port') || 'in';
-      finishLink(fromId, fromPort, toId, toPort);
-    }
-  };
-
-  // 失焦（拖到窗口外松手）时也要收尾，避免虚线一直挂在画布上
-  const onCancel = () => {
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-    window.removeEventListener('blur', onCancel);
-    endLinking();
-  };
-
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-  window.addEventListener('blur', onCancel);
-}
-
-function finishLink(fromId, fromPort, toId, toPort){
-  const rule = currentRule();
-  if (!rule) return;
-  CS.linking = null;
-  clearRubber();
-  if (fromId === toId) return;
-  rule.links = rule.links.filter(l =>
-    !(l.from === fromId && l.to === toId &&
-      (l.fromPort || 'out') === fromPort && (l.toPort || 'in') === toPort)
-  );
-  rule.links.push({ from: fromId, fromPort, to: toId, toPort });
-  renderCanvas();
-}
-
-// ============================================================
-// 端口 / 节点 HTML
-// ============================================================
-function portHtml(nId, kind, port){
-  // kind: 'out' | 'in'
-  if (kind === 'out'){
-    let topPct = '50%';
-    let extra = '';
-    if (port === 'out_true')  { topPct = '35%'; extra = ' port-true'; }
-    if (port === 'out_false') { topPct = '65%'; extra = ' port-false'; }
-    return '<div class="c-port c-port-out' + extra +
-           '" data-node="' + nId + '" data-port="' + port +
-           '" style="top:' + topPct + '"></div>';
-  }
-  let topPct = '50%';
-  if (port === 'in1')  topPct = '30%';
-  if (port === 'in2')  topPct = '70%';
-  if (port === 'in')   topPct = '30%';
-  if (port === 'cond') topPct = '70%';
-  return '<div class="c-port c-port-in" data-node="' + nId +
-         '" data-port="' + port + '" style="top:' + topPct + '"></div>';
-}
-
-function nodeHtml(n){
-  const meta = NODE_META[n.type] || { label: n.type, icon: '?' };
-  let body = '';
-  let ports = '';
-
-  const outSingle = portHtml(n.id, 'out', 'out');
-  const inSingle = portHtml(n.id, 'in', 'in');
-  const in1 = portHtml(n.id, 'in', 'in1');
-  const in2 = portHtml(n.id, 'in', 'in2');
-
-  if (n.type === 'tag' || n.type === 'bool' || n.type === 'tagStatus'){
-    const ph = n.type === 'bool' ? '输入关键字搜索布尔位号…' : '输入关键字搜索位号…';
-    const info = n.tag ? (CS.tagMap[n.tag] || {}) : {};
-    body =
-      '<div class="tag-picker-wrap">' +
-        '<input type="text" class="tag-input" data-nid="' + n.id +
-          '" data-field="tag" value="' + esc(n.tag || '') +
-          '" placeholder="' + ph + '" autocomplete="off">' +
-      '</div>' +
-      (info.desc ? '<div class="n-desc">' + esc(info.desc) + '</div>' : '') +
-      (n.type === 'tagStatus' ? '<div class="n-tip">质量正常输出 true</div>' : '');
-    ports = outSingle;
-  }
-  else if (n.type === 'compare'){
-    body =
-      '<div class="row"><label>运算</label>' +
-      '<select data-nid="' + n.id + '" data-field="op">' +
-        ['>=','>','<=','<','==','!='].map(o =>
-          '<option value="' + o + '"' + (n.op === o ? ' selected' : '') + '>' + o + '</option>'
-        ).join('') +
-      '</select></div>' +
-      '<div class="row"><label>阈值</label>' +
-      '<input type="number" step="any" data-nid="' + n.id + '" data-field="value" data-ntype="num" value="' +
-        (n.value == null ? '' : n.value) + '"></div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'range'){
-    body =
-      '<div class="row"><label>下限</label>' +
-      '<input type="number" step="any" data-nid="' + n.id + '" data-field="min" data-ntype="num" value="' +
-        (n.min == null ? '' : n.min) + '"></div>' +
-      '<div class="row"><label>上限</label>' +
-      '<input type="number" step="any" data-nid="' + n.id + '" data-field="max" data-ntype="num" value="' +
-        (n.max == null ? '' : n.max) + '"></div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'deviation'){
-    body =
-      '<div class="row"><label>基准</label>' +
-      '<input type="number" step="any" data-nid="' + n.id + '" data-field="base" data-ntype="num" value="' +
-        (n.base == null ? '' : n.base) + '"></div>' +
-      '<div class="row"><label>阈值</label>' +
-      '<input type="number" step="any" data-nid="' + n.id + '" data-field="threshold" data-ntype="num" value="' +
-        (n.threshold == null ? '' : n.threshold) + '"></div>' +
-      '<div class="n-tip">|值 - 基准| &gt; 阈值</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'rate'){
-    body =
-      '<div class="row"><label>窗口(s)</label>' +
-      '<input type="number" data-nid="' + n.id + '" data-field="window" data-ntype="num" value="' +
-        (n.window || 60) + '" min="1"></div>' +
-      '<div class="row"><label>变化阈值</label>' +
-      '<input type="number" step="any" data-nid="' + n.id + '" data-field="threshold" data-ntype="num" value="' +
-        (n.threshold == null ? '' : n.threshold) + '"></div>' +
-      '<div class="n-tip">窗口内变化量 &gt; 阈值</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'logic'){
-    body =
-      '<div class="row"><label>运算</label>' +
-      '<select data-nid="' + n.id + '" data-field="op">' +
-        '<option value="AND"' + (n.op === 'AND' ? ' selected' : '') + '>AND 且</option>' +
-        '<option value="OR"'  + (n.op === 'OR'  ? ' selected' : '') + '>OR 或</option>' +
-      '</select></div>';
-    ports = in1 + in2 + outSingle;
-  }
-  else if (n.type === 'not'){
-    body = '<div class="n-tip">输入取反</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'xor'){
-    body = '<div class="n-tip">两输入不同输出 true</div>';
-    ports = in1 + in2 + outSingle;
-  }
-  else if (n.type === 'duration'){
-    body =
-      '<div class="row"><label>持续(s)</label>' +
-      '<input type="number" data-nid="' + n.id + '" data-field="seconds" data-ntype="num" value="' +
-        (n.seconds || 5) + '" min="0"></div>' +
-      '<div class="n-tip">连续为 true 超过 N 秒输出</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'delay'){
-    body =
-      '<div class="row"><label>延时(s)</label>' +
-      '<input type="number" data-nid="' + n.id + '" data-field="seconds" data-ntype="num" value="' +
-        (n.seconds || 5) + '" min="0"></div>' +
-      '<div class="n-tip">输入 true 后延时 N 秒输出</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'timeRange'){
-    body =
-      '<div class="row"><label>起</label>' +
-      '<input type="text" data-nid="' + n.id + '" data-field="start" value="' +
-        esc(n.start || '08:00') + '" placeholder="HH:MM"></div>' +
-      '<div class="row"><label>止</label>' +
-      '<input type="text" data-nid="' + n.id + '" data-field="end" value="' +
-        esc(n.end || '18:00') + '" placeholder="HH:MM"></div>' +
-      '<div class="n-tip">当前时间在 [起,止) 内输出 true</div>';
-    ports = outSingle;
-  }
-  else if (n.type === 'varGet'){
-    if (!CS.varNames.length){
-      body = '<div class="n-tip" style="color:#f59e0b">未创建变量，请到「环境变量」页添加</div>';
-    } else {
-      body = '<div class="row"><label>变量名</label>' +
-        '<select data-nid="' + n.id + '" data-field="name">' +
-          ['<option value="">— 请选择 —</option>'].concat(
-            CS.varNames.map(nm =>
-              '<option value="' + esc(nm) + '"' +
-              (n.name === nm ? ' selected' : '') + '>' + esc(nm) + '</option>'
-            )
-          ).join('') +
-        '</select></div>';
-    }
-    ports = outSingle;
-  }
-  else if (n.type === 'varSet'){
-    const mode = n.mode || 'input';
-    if (!CS.varNames.length){
-      body = '<div class="n-tip" style="color:#f59e0b">未创建变量，请到「环境变量」页添加</div>';
-    } else {
-      body =
-        '<div class="row"><label>变量名</label>' +
-          '<select data-nid="' + n.id + '" data-field="name">' +
-            ['<option value="">— 请选择 —</option>'].concat(
-              CS.varNames.map(nm =>
-                '<option value="' + esc(nm) + '"' +
-                (n.name === nm ? ' selected' : '') + '>' + esc(nm) + '</option>'
-              )
-            ).join('') +
-          '</select>' +
-        '</div>' +
-        '<div class="row"><label>模式</label>' +
-          '<select data-nid="' + n.id + '" data-field="mode">' +
-            '<option value="input"' + (mode === 'input' ? ' selected' : '') + '>由输入决定</option>' +
-            '<option value="fixed"' + (mode === 'fixed' ? ' selected' : '') + '>固定值</option>' +
-          '</select>' +
-        '</div>' +
-        (mode === 'fixed'
-          ? '<div class="row"><label>固定值</label>' +
-              '<input type="text" data-nid="' + n.id + '" data-field="value" value="' +
-                esc(n.value == null ? '' : n.value) + '" placeholder="1 或 报警"></div>' +
-            '<div class="row"><label>类型</label>' +
-              '<select data-nid="' + n.id + '" data-field="valueType">' +
-                '<option value="number"' + (n.valueType !== 'string' ? ' selected' : '') + '>数值</option>' +
-                '<option value="string"' + (n.valueType === 'string' ? ' selected' : '') + '>文本</option>' +
-              '</select>' +
-            '</div>'
-          : '<div class="n-tip">把输入写入变量，并继续往后传</div>'
-        );
-    }
-    ports = (mode === 'fixed' ? inSingle : inSingle) + outSingle;
-  }
-  else if (n.type === 'if'){
-    body =
-      '<div class="n-tip">信号+条件 → 真/假 两出口</div>' +
-      '<div class="if-labels">' +
-        '<span class="if-yes">真 → 上</span>' +
-        '<span class="if-no">假 → 下</span>' +
-      '</div>';
-    ports =
-      portHtml(n.id, 'in', 'in') +
-      portHtml(n.id, 'in', 'cond') +
-      portHtml(n.id, 'out', 'out_true') +
-      portHtml(n.id, 'out', 'out_false');
-  }
-  else if (n.type === 'merge'){
-    body = '<div class="n-tip">任一输入为 true 则输出 true</div>';
-    ports = in1 + in2 + outSingle;
-  }
-  else if (n.type === 'constN'){
-    const vt = n.valueType || 'number';
-    body =
-      '<div class="row"><label>类型</label>' +
-        '<select data-nid="' + n.id + '" data-field="valueType">' +
-          [['number', '数值'], ['bool', '布尔'], ['string', '文本']].map(([v, t]) =>
-            '<option value="' + v + '"' + (vt === v ? ' selected' : '') + '>' + t + '</option>'
-          ).join('') +
-        '</select>' +
-      '</div>' +
-      (vt === 'bool'
-        ? '<div class="row"><label>值</label>' +
-            '<select data-nid="' + n.id + '" data-field="value">' +
-              '<option value="true"' + (String(n.value) === 'true' ? ' selected' : '') + '>true</option>' +
-              '<option value="false"' + (String(n.value) !== 'true' ? ' selected' : '') + '>false</option>' +
-            '</select></div>'
-        : '<div class="row"><label>值</label>' +
-            '<input type="text" data-nid="' + n.id + '" data-field="value" value="' +
-            esc(n.value === undefined || n.value === null ? '' : n.value) + '"></div>') +
-      '<div class="n-tip">常量可作为比较阈值、运算操作数或映射输入</div>';
-    ports = outSingle;
-  }
-  else if (n.type === 'textCmp'){
-    const op = n.op || 'eq';
-    body =
-      '<div class="row"><label>方式</label>' +
-        '<select data-nid="' + n.id + '" data-field="op">' +
-          [['eq', '等于'], ['ne', '不等于'], ['contains', '包含'], ['notContains', '不包含'],
-           ['startsWith', '开头是'], ['endsWith', '结尾是'], ['empty', '为空'],
-           ['notEmpty', '不为空'], ['regex', '正则匹配']].map(([v, t]) =>
-            '<option value="' + v + '"' + (op === v ? ' selected' : '') + '>' + t + '</option>'
-          ).join('') +
-        '</select>' +
-      '</div>' +
-      '<div class="row"><label>文本</label>' +
-        '<input type="text" data-nid="' + n.id + '" data-field="value" value="' +
-        esc(n.value === undefined || n.value === null ? '' : n.value) + '"></div>' +
-      '<label><input type="checkbox" data-nid="' + n.id + '" data-field="ignoreCase"' +
-        (n.ignoreCase ? ' checked' : '') + '> 忽略大小写</label>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'hold'){
-    body =
-      '<div class="row"><label>保持(s)</label>' +
-        '<input type="number" data-nid="' + n.id + '" data-field="seconds" value="' + (n.seconds || 5) + '" min="1"></div>' +
-      '<div class="n-tip">输入变真立即输出真；输入转假后再保持 N 秒</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'pulse'){
-    body =
-      '<div class="row"><label>时长(s)</label>' +
-        '<input type="number" data-nid="' + n.id + '" data-field="seconds" value="' + (n.seconds || 3) + '" min="1"></div>' +
-      '<div class="n-tip">每次输入上升沿输出一个固定时长脉冲</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'latch'){
-    const op = n.op || 'sr';
-    body =
-      '<div class="row"><label>优先级</label>' +
-        '<select data-nid="' + n.id + '" data-field="op">' +
-          '<option value="sr"' + (op === 'sr' ? ' selected' : '') + '>置位优先</option>' +
-          '<option value="rs"' + (op === 'rs' ? ' selected' : '') + '>复位优先</option>' +
-        '</select>' +
-      '</div>' +
-      '<div class="n-tip">上=置位 S，下=复位 R；输出保持到下次动作</div>';
-    ports = in1 + in2 + outSingle;
-  }
-  else if (n.type === 'toggle'){
-    body = '<div class="n-tip">上=翻转（每次上升沿改变输出），下=复位</div>';
-    ports = in1 + in2 + outSingle;
-  }
-  else if (n.type === 'edge'){
-    const dir = n.dir || 'rise';
-    body =
-      '<div class="row"><label>方向</label>' +
-        '<select data-nid="' + n.id + '" data-field="dir">' +
-          '<option value="rise"' + (dir === 'rise' ? ' selected' : '') + '>上升沿</option>' +
-          '<option value="fall"' + (dir === 'fall' ? ' selected' : '') + '>下降沿</option>' +
-          '<option value="both"' + (dir === 'both' ? ' selected' : '') + '>任意变化</option>' +
-        '</select>' +
-      '</div>' +
-      '<div class="n-tip">检测到变化时输出 1 个扫描周期</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'counter'){
-    const mode = n.mode || 'bool';
-    body =
-      '<div class="row"><label>目标</label>' +
-        '<input type="number" data-nid="' + n.id + '" data-field="target" value="' + (n.target || 3) + '" min="1"></div>' +
-      '<div class="row"><label>输出</label>' +
-        '<select data-nid="' + n.id + '" data-field="mode">' +
-          '<option value="bool"' + (mode === 'bool' ? ' selected' : '') + '>达到目标输出 true</option>' +
-          '<option value="pulse"' + (mode === 'pulse' ? ' selected' : '') + '>每满 N 次输出脉冲</option>' +
-          '<option value="value"' + (mode === 'value' ? ' selected' : '') + '>输出当前次数</option>' +
-        '</select>' +
-      '</div>' +
-      '<div class="n-tip">上=计数（上升沿 +1），下=清零</div>';
-    ports = in1 + in2 + outSingle;
-  }
-  else if (n.type === 'arith'){
-    const op = n.op || '+';
-    body =
-      '<div class="row"><label>运算</label>' +
-        '<select data-nid="' + n.id + '" data-field="op">' +
-          [['+', '加'], ['-', '减'], ['*', '乘'], ['/', '除'], ['%', '取余'],
-           ['max', '取大'], ['min', '取小'], ['pow', '幂']].map(([v, t]) =>
-            '<option value="' + v + '"' + (op === v ? ' selected' : '') + '>' + t + '</option>'
-          ).join('') +
-        '</select>' +
-      '</div>' +
-      '<div class="row"><label>常数</label>' +
-        '<input type="text" data-nid="' + n.id + '" data-field="value" value="' +
-        esc(n.value === undefined || n.value === null ? '' : n.value) + '"></div>' +
-      '<div class="n-tip">下端口未接线时使用常数参与运算</div>';
-    ports = in1 + in2 + outSingle;
-  }
-  else if (n.type === 'mathFn'){
-    const fn = n.fn || 'abs';
-    body =
-      '<div class="row"><label>函数</label>' +
-        '<select data-nid="' + n.id + '" data-field="fn">' +
-          [['abs', '绝对值'], ['round', '四舍五入'], ['floor', '向下取整'], ['ceil', '向上取整'],
-           ['sqrt', '平方根'], ['neg', '取负'], ['log10', 'log10'], ['ln', 'ln']].map(([v, t]) =>
-            '<option value="' + v + '"' + (fn === v ? ' selected' : '') + '>' + t + '</option>'
-          ).join('') +
-        '</select>' +
-      '</div>' +
-      (fn === 'round'
-        ? '<div class="row"><label>小数位</label>' +
-            '<input type="number" data-nid="' + n.id + '" data-field="digits" value="' + (n.digits || 0) + '" min="0" max="6"></div>'
-        : '');
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'scale'){
-    body =
-      '<div class="row"><label>输入范围</label>' +
-        '<input type="text" data-nid="' + n.id + '" data-field="inMin" value="' + esc(n.inMin === undefined ? '' : n.inMin) + '" placeholder="最小">' +
-        '<input type="text" data-nid="' + n.id + '" data-field="inMax" value="' + esc(n.inMax === undefined ? '' : n.inMax) + '" placeholder="最大">' +
-      '</div>' +
-      '<div class="row"><label>输出范围</label>' +
-        '<input type="text" data-nid="' + n.id + '" data-field="outMin" value="' + esc(n.outMin === undefined ? '' : n.outMin) + '" placeholder="最小">' +
-        '<input type="text" data-nid="' + n.id + '" data-field="outMax" value="' + esc(n.outMax === undefined ? '' : n.outMax) + '" placeholder="最大">' +
-      '</div>' +
-      '<label><input type="checkbox" data-nid="' + n.id + '" data-field="clamp"' +
-        (n.clamp ? ' checked' : '') + '> 超出范围时截断</label>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'stat'){
-    const fn = n.fn || 'avg';
-    body =
-      '<div class="row"><label>窗口(s)</label>' +
-        '<input type="number" data-nid="' + n.id + '" data-field="window" value="' + (n.window || 60) + '" min="1"></div>' +
-      '<div class="row"><label>统计</label>' +
-        '<select data-nid="' + n.id + '" data-field="fn">' +
-          [['avg', '平均值'], ['max', '最大值'], ['min', '最小值'], ['sum', '合计'],
-           ['range', '极差'], ['std', '标准差']].map(([v, t]) =>
-            '<option value="' + v + '"' + (fn === v ? ' selected' : '') + '>' + t + '</option>'
-          ).join('') +
-        '</select>' +
-      '</div>' +
-      '<div class="n-tip">按窗口滚动统计输入值，可再接比较节点判定</div>';
-    ports = inSingle + outSingle;
-  }
-  else if (n.type === 'trigger'){
-    const mailOn = (n.mail === true || n.mail === 'true');
-    body =
-      '<div class="row"><label>级别</label>' +
-      '<select data-nid="' + n.id + '" data-field="level">' +
-        ['HH','H','L','LL'].map(x =>
-          '<option value="' + x + '"' + (n.level === x ? ' selected' : '') + '>' + x + '</option>'
-        ).join('') +
-      '</select></div>' +
-      '<textarea data-nid="' + n.id + '" data-field="msg" rows="2" spellcheck="false" ' +
-        'placeholder="通知内容，留空则用默认文案">' + esc(n.msg || '') + '</textarea>' +
-      '<label><input type="checkbox" data-nid="' + n.id + '" data-field="mail"' +
-        (mailOn ? ' checked' : '') + '> 同时发送邮件</label>' +
-      '<div class="n-tip">可用占位符：{rule} 规则名、{time} 触发时间、{value} 触发值。不勾选邮件时只在报警弹窗提醒。</div>';
-    ports = inSingle;
-  }
-
-  let kindTxt = n.id.slice(-4);
-  if ((n.type === 'tag' || n.type === 'bool' || n.type === 'tagStatus') && n.tag){
-    kindTxt = n.tag.length > 12 ? n.tag.slice(-12) : n.tag;
-  } else if ((n.type === 'varGet' || n.type === 'varSet') && n.name){
-    kindTxt = n.name;
-  } else if (n.type === 'trigger'){
-    const m = String(n.msg || '').trim();
-    kindTxt = m ? (m.length > 10 ? m.slice(0, 10) + '…' : m) : '默认文案';
-  }
-
-  return '<div class="cnode type-' + n.type + '" data-id="' + n.id +
-    '" style="left:' + n.x + 'px;top:' + n.y + 'px">' +
-    '<div class="cnode-hd">' +
-      '<span class="cnode-ico">' + meta.icon + '</span>' +
-      '<span class="cnode-lbl">' + meta.label + '</span>' +
-      '<span class="kind" title="' + esc(kindTxt) + '">' + esc(kindTxt) + '</span>' +
-      '<span class="cnode-del" data-del="' + n.id + '" title="删除">×</span>' +
-    '</div>' +
-    '<div class="cnode-body">' + body + '</div>' +
-    ports +
-  '</div>';
-}
-
-// ============================================================
-// 拖动节点
-// ============================================================
-function bindNodeDrag(n, el){
-  if (!el) return;
-  el.addEventListener('mousedown', e => {
-    if (e.target.classList.contains('c-port')) return;
-    if (e.target.classList.contains('cnode-del')) return;
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' ||
-        e.target.tagName === 'TEXTAREA') return;
-
-    const sx = e.clientX, sy = e.clientY;
-    const nx0 = n.x, ny0 = n.y;
-    el.classList.add('dragging-node');
-
-    const move = ev => {
-      n.x = Math.max(0, nx0 + ev.clientX - sx);
-      n.y = Math.max(0, ny0 + ev.clientY - sy);
-      el.style.left = n.x + 'px';
-      el.style.top  = n.y + 'px';
-      updateLinks();
-    };
-    const up = () => {
-      el.classList.remove('dragging-node');
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-    };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-  });
-}
-
-// ============================================================
-// 连线：DOM 实测 + 双层 path
-// ============================================================
-function updateLinks(){
-  const rule = currentRule();
-  if (!rule) return;
-  const container = document.getElementById('canvasNodes');
-  const layers = linkLayers();
-  if (!layers || !container) return;
-  // 不在连线状态时，任何一次重绘都顺手清掉可能残留的临时虚线
-  if (!CS.linking) clearRubber();
-  const cr = container.getBoundingClientRect();
-
-  const lines = rule.links.map((l, i) => {
-    const fp = l.fromPort || 'out';
-    const tp = l.toPort || 'in';
-    const fromEl = container.querySelector(
-      '.cnode[data-id="' + l.from + '"] .c-port-out[data-port="' + fp + '"]'
-    );
-    if (!fromEl) return '';
-    const toEl = container.querySelector(
-      '.cnode[data-id="' + l.to + '"] .c-port-in[data-port="' + tp + '"]'
-    );
-    if (!toEl) return '';
-
-    const r1 = fromEl.getBoundingClientRect();
-    const r2 = toEl.getBoundingClientRect();
-    const p1 = { x: r1.left - cr.left + r1.width / 2, y: r1.top - cr.top + r1.height / 2 };
-    const p2 = { x: r2.left - cr.left + r2.width / 2, y: r2.top - cr.top + r2.height / 2 };
-    const dx = Math.max(60, Math.abs(p2.x - p1.x) / 2);
-    const d = 'M ' + p1.x + ' ' + p1.y +
-              ' C ' + (p1.x + dx) + ' ' + p1.y + ', ' +
-                       (p2.x - dx) + ' ' + p2.y + ', ' +
-                       p2.x + ' ' + p2.y;
-    return '<path class="link-hit" d="' + d + '" data-link="' + i + '"></path>' +
-           '<path class="link-line" d="' + d + '"></path>';
-  }).join('');
-
-  layers.linkLayer.innerHTML = lines;
-
-  layers.linkLayer.querySelectorAll('path.link-hit').forEach(p => {
-    p.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const i = Number(p.getAttribute('data-link'));
-      const rule = currentRule();
-      if (!rule) return;
-      rule.links.splice(i, 1);
-      updateLinks();
-    });
-  });
-}
-
-// ============================================================
-// 添加节点
-// ============================================================
-function makeNodeObj(type, x, y){
-  const id = 'n' + Date.now() + Math.random().toString(36).slice(2, 5);
-  const base = { id, type, x: Math.max(0, x), y: Math.max(0, y) };
-  if (type === 'tag' || type === 'bool' || type === 'tagStatus') base.tag = '';
-  else if (type === 'compare'){ base.op = '>='; base.value = ''; }
-  else if (type === 'range'){ base.min = ''; base.max = ''; }
-  else if (type === 'deviation'){ base.base = ''; base.threshold = ''; }
-  else if (type === 'rate'){ base.window = 60; base.threshold = ''; }
-  else if (type === 'logic') base.op = 'AND';
-  else if (type === 'duration') base.seconds = 5;
-  else if (type === 'delay') base.seconds = 5;
-  else if (type === 'timeRange'){ base.start = '08:00'; base.end = '18:00'; }
-  else if (type === 'varGet') base.name = '';
-  else if (type === 'varSet'){ base.name = ''; base.mode = 'input'; base.value = ''; base.valueType = 'number'; }
-  else if (type === 'constN'){ base.valueType = 'number'; base.value = ''; }
-  else if (type === 'textCmp'){ base.op = 'eq'; base.value = ''; base.ignoreCase = false; }
-  else if (type === 'hold') base.seconds = 5;
-  else if (type === 'pulse') base.seconds = 3;
-  else if (type === 'latch') base.op = 'sr';
-  else if (type === 'edge') base.dir = 'rise';
-  else if (type === 'counter'){ base.target = 3; base.mode = 'bool'; }
-  else if (type === 'arith'){ base.op = '+'; base.value = 0; }
-  else if (type === 'mathFn'){ base.fn = 'abs'; base.digits = 0; }
-  else if (type === 'scale'){ base.inMin = 0; base.inMax = 100; base.outMin = 0; base.outMax = 100; base.clamp = false; }
-  else if (type === 'stat'){ base.window = 60; base.fn = 'avg'; }
-  else if (type === 'trigger'){ base.level = 'HH'; base.msg = ''; base.mail = false; }
-  return base;
-}
-
-function addNodeAt(type, x, y){
-  const rule = currentRule();
-  if (!rule) return;
-  rule.nodes.push(makeNodeObj(type, x, y));
-  renderCanvas();
-}
-
-// ============================================================
-// 侧边栏拖拽
-// ============================================================
-function bindSideItems(){
-  const side = document.getElementById('canvasSide');
-  const area = document.getElementById('canvasArea');
-  if (!side || !area) return;
-  side.querySelectorAll('.side-item').forEach(item => {
-    item.addEventListener('mousedown', e => {
-      e.preventDefault();
-      const type = item.getAttribute('data-type');
-      if (!type) return;
-      startDragCreate(type, e);
-    });
-  });
-}
-
-function startDragCreate(type, downEvent){
-  const area = document.getElementById('canvasArea');
-  const meta = NODE_META[type] || { label: type, icon: '?' };
-  const ghost = document.createElement('div');
-  ghost.className = 'drag-ghost';
-  ghost.innerHTML = '<span class="ico">' + (meta.icon || '') + '</span>' + meta.label;
-  ghost.style.left = downEvent.clientX + 'px';
-  ghost.style.top  = downEvent.clientY + 'px';
-  document.body.appendChild(ghost);
-
-  const startX = downEvent.clientX;
-  const startY = downEvent.clientY;
-  let moved = false;
-
-  const move = ev => {
-    if (!moved && (Math.abs(ev.clientX - startX) > 4 || Math.abs(ev.clientY - startY) > 4)){
-      moved = true;
-    }
-    ghost.style.left = ev.clientX + 'px';
-    ghost.style.top  = ev.clientY + 'px';
-    const r = area.getBoundingClientRect();
-    const inside = ev.clientX >= r.left && ev.clientX <= r.right &&
-                   ev.clientY >= r.top  && ev.clientY <= r.bottom;
-    ghost.classList.toggle('over', inside);
-    area.classList.toggle('drop-target', inside);
-  };
-
-  const up = ev => {
-    document.removeEventListener('mousemove', move);
+  const up = function (e) {
+    document.removeEventListener('mousemove', mv);
     document.removeEventListener('mouseup', up);
-    ghost.remove();
-    area.classList.remove('drop-target');
-    const r = area.getBoundingClientRect();
-    const inside = ev.clientX >= r.left && ev.clientX <= r.right &&
-                   ev.clientY >= r.top  && ev.clientY <= r.bottom;
-    if (!moved){ addNodeAt(type, r.width / 2 - 100, r.height / 2 - 40); return; }
-    if (inside){
-      addNodeAt(type, ev.clientX - r.left - 100, ev.clientY - r.top - 30);
-    }
+    if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+    const panel = $('canvasPanel');
+    if (!panel) return;
+    const rc = panel.getBoundingClientRect();
+    if (e.clientX < rc.left || e.clientX > rc.right || e.clientY < rc.top || e.clientY > rc.bottom) return;
+    const pos = toCanvas(e.clientX, e.clientY);
+    addNodeAt(type, pos.x, pos.y);
   };
-
-  document.addEventListener('mousemove', move);
+  document.addEventListener('mousemove', mv);
   document.addEventListener('mouseup', up);
 }
 
-// ============================================================
-// 初始化
-// ============================================================
-function canvasInitBindings(){
-  document.getElementById('canvasRuleSelect').addEventListener('change', e => {
-    CS.currentId = e.target.value;
-    endLinking();
-    renderCanvas();
-  });
-  document.getElementById('btnCanvasNew').addEventListener('click', () => {
-    const r = newCanvasRule();
-    CS.rules.push(r);
-    CS.currentId = r.id;
-    renderRuleSelect();
-    renderCanvas();
-  });
-  document.getElementById('btnCanvasDelete').addEventListener('click', async () => {
-    if (CS.rules.length <= 1){ await msgBox('至少保留一个规则。'); return; }
-    const r = currentRule();
-    const ok = await confirmBox('删除规则「' + r.name + '」？', '删除确认');
-    if (!ok) return;
-    CS.rules = CS.rules.filter(x => x.id !== r.id);
-    CS.currentId = CS.rules[0].id;
-    renderRuleSelect();
-    renderCanvas();
-  });
-  document.getElementById('btnCanvasSave').addEventListener('click', canvasSave);
-  document.getElementById('canvasArea').addEventListener('mousedown', e => {
-    if (e.target.id === 'canvasArea' || e.target.id === 'canvasNodes'){
-      endLinking();
-    }
-  });
-  // 按 Esc 放弃本次连线，虚线一并清除
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && CS.linking) endLinking();
-  });
-  bindSideItems();
-  window.addEventListener('resize', () => setTimeout(updateLinks, 0));
+function nodeDefaults(type) {
+  const d = DEFS[type];
+  const n = { id: uid('n'), type: type, x: 0, y: 0 };
+  n.v2 = true;
+  if (d && d.fs) {
+    d.fs.forEach(function (f) {
+      if (f.t === 'note') return;
+      n[f.k] = (f.d === undefined ? (f.t === 'bool' ? false : '') : f.d);
+    });
+  }
+  return n;
 }
 
-window.__canvasReloadVars = async function(){
+function addNodeAt(type, x, y) {
+  const r = curRule();
+  if (!r) { toast('请先新建规则'); return; }
+  const n = nodeDefaults(type);
+  n.x = Math.round(x);
+  n.y = Math.round(y);
+  if (!Array.isArray(r.nodes)) r.nodes = [];
+  r.nodes.push(n);
+  if (!Array.isArray(r.links)) r.links = [];
+  CS.sel = n.id;
+  renderAll();
+  openDrawer();
+}
+
+/* ============================================================
+ * 六、画布渲染（节点 / 连线 / 视口变换）
+ * ============================================================ */
+// 端口纵向位置：随索引递增，配合节点高度自适应
+function portTop(i) { return 40 + i * 28; }
+
+function portsOf(n) {
+  const d = DEFS[n.type] || {};
+  return { ins: d.ins || CARD_DEFAULT_INS, outs: d.outs || CARD_DEFAULT_OUTS };
+}
+
+function nodeEl(n) {
+  const el = document.createElement('div');
+  el.className = 'cnode' + (CS.sel === n.id ? ' selected' : '');
+  el.setAttribute('data-node', n.id);
+  el.style.left = (Number(n.x) || 0) + 'px';
+  el.style.top = (Number(n.y) || 0) + 'px';
+
+  const p = portsOf(n);
+  const title = NEW_TYPES[n.type] || n.type;
+  const color = CAT_COLOR[(DEFS[n.type] || {}).cat || 'device'];
+  const sub = nodeSummary(n);
+
+  // 端口纵向自适应：连接点增多时同步增高节点，避免端口溢出卡片
+  const maxPorts = Math.max(p.ins.length, p.outs.length);
+  if (maxPorts > 3) el.style.minHeight = (108 + (maxPorts - 3) * 28) + 'px';
+
+  el.innerHTML =
+    '<div class="cnode-hd"><i class="dot" style="background:' + color + '"></i>' +
+    '<span class="txt" title="' + esc(title + '｜' + sub) + '">' + esc(title) + '</span></div>' +
+    '<div class="cnode-bd">' + esc(sub) + '</div>';
+
+  // 端口
+  p.ins.forEach(function (cfg, i) {
+    const d = document.createElement('i');
+    d.className = 'c-port c-port-in p' + i;
+    d.style.top = portTop(i) + 'px';
+    d.setAttribute('data-dir', 'in');
+    d.setAttribute('data-port', cfg[0]);
+    d.setAttribute('data-node', n.id);
+    if (cfg[1]) d.title = cfg[1];
+    el.appendChild(d);
+    CS.portIndex[n.id + '|in|' + cfg[0]] = d;
+    if (cfg[1] && i > 0) {
+      const lab = document.createElement('span');
+      lab.className = 'c-port-label l p' + i;
+      lab.style.top = portTop(i) + 'px';
+      lab.textContent = cfg[1];
+      el.appendChild(lab);
+    }
+  });
+  p.outs.forEach(function (cfg, i) {
+    const d = document.createElement('i');
+    d.className = 'c-port c-port-out p' + i;
+    d.style.top = portTop(i) + 'px';
+    d.setAttribute('data-dir', 'out');
+    d.setAttribute('data-port', cfg[0]);
+    d.setAttribute('data-node', n.id);
+    if (cfg[1]) d.title = cfg[1];
+    el.appendChild(d);
+    CS.portIndex[n.id + '|out|' + cfg[0]] = d;
+    if (cfg[1] && i > 0) {
+      const lab = document.createElement('span');
+      lab.className = 'c-port-label r p' + i;
+      lab.style.top = portTop(i) + 'px';
+      lab.textContent = cfg[1];
+      el.appendChild(lab);
+    }
+  });
+  return el;
+}
+
+function nodeSummary(n) {
+  const d = DEFS[n.type];
+  if (!d) return n.type;
+  try { return d.sum ? d.sum(n) : d.label; } catch (e) { return d.label; }
+}
+
+function renderCanvas() {
+  const box = $('canvasNodes');
+  if (!box) return;
+  CS.portIndex = {};
+  box.innerHTML = '';
+  const r = curRule();
+  const empty = $('canvasEmpty');
+  if (!r) {
+    if (empty) { empty.textContent = '没有可编辑的规则'; empty.style.display = 'flex'; }
+    return;
+  }
+  const nodes = r.nodes || [];
+  if (empty) {
+    empty.textContent = '拖拽左侧内容至这里创建';
+    empty.style.display = nodes.length ? 'none' : 'flex';
+  }
+  nodes.forEach(function (n) { box.appendChild(nodeEl(n)); });
+  window.requestAnimationFrame(drawLinks);
+  applyView();
+}
+
+function portPos(el) {
+  const vp = $('canvas-viewport');
+  let x = 0, y = 0, e = el;
+  while (e && e !== vp) {
+    x += e.offsetLeft || 0;
+    y += e.offsetTop || 0;
+    e = e.offsetParent;
+  }
+  const w = el.offsetWidth / 2, h = el.offsetHeight / 2;
+  return { x: x + w, y: y + h };
+}
+
+function drawLinks() {
+  const rule = curRule();
+  const layer = $('linkLayer');
+  const svg = $('canvasLinks');
+  if (!rule || !layer || !svg) return;
+  layer.innerHTML = '';
+  svg.setAttribute('width', '4000');
+  svg.setAttribute('height', '3000');
+  (rule.links || []).forEach(function (l) {
+    const a = CS.portIndex[l.from + '|out|' + (l.fromPort || 'out')];
+    const b = CS.portIndex[l.to + '|in|' + (l.toPort || 'in')];
+    if (!a || !b) return;
+    const pa = portPos(a), pb = portPos(b);
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', 'M' + pa.x + ',' + pa.y +
+      ' C' + (pa.x + 60) + ',' + pa.y + ' ' + (pb.x - 60) + ',' + pb.y + ' ' + pb.x + ',' + pb.y);
+    path.setAttribute('class', 'link-path');
+    path.setAttribute('data-link', l.id);
+    layer.appendChild(path);
+  });
+}
+
+function applyView() {
+  const vp = $('canvas-viewport');
+  if (vp) vp.style.transform = 'translate3d(' + CS.view.x + 'px,' + CS.view.y + 'px,0) scale(' + CS.view.z + ')';
+  const zt = $('zoomText');
+  if (zt) zt.textContent = Math.round(CS.view.z * 100) + '%';
+}
+
+function toCanvas(clientX, clientY) {
+  const panel = $('canvasPanel');
+  const rc = panel.getBoundingClientRect();
+  return {
+    x: (clientX - rc.left - CS.view.x) / CS.view.z,
+    y: (clientY - rc.top - CS.view.y) / CS.view.z
+  };
+}
+
+/* ============================================================
+ * 七、节点拖动 / 端口连线 / 画布平移缩放
+ * ============================================================ */
+function bindCanvas() {
+  const panel = $('canvasPanel');
+  if (!panel) return;
+
+  panel.addEventListener('mousedown', function (e) {
+    // 悬浮工具条内的交互不触发画布平移 / 取消选中
+    if (e.target.closest && e.target.closest('.graph-toolbar')) return;
+    const port = e.target.closest ? e.target.closest('.c-port') : null;
+    if (port) { startLink(port, e); return; }
+    const nodeElM = e.target.closest ? e.target.closest('.cnode') : null;
+    if (nodeElM) {
+      const id = nodeElM.getAttribute('data-node');
+      selectNode(id);
+      startNodeDrag(nodeElM, id, e);
+      return;
+    }
+    // 空白区域：平移画布 + 取消选中
+    selectNode(null);
+    startPan(e);
+  });
+
+  panel.addEventListener('mousemove', function (e) {
+    if (CS.link) moveLink(e);
+  });
+  panel.addEventListener('mouseup', function (e) {
+    if (CS.link) finishLink(e);
+  });
+  panel.addEventListener('dblclick', function (e) {
+    const nodeElM = e.target.closest ? e.target.closest('.cnode') : null;
+    if (nodeElM) openDrawer();
+  });
+
+  // 滚轮：默认平移，Ctrl+滚轮缩放
+  panel.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const before = toCanvas(e.clientX, e.clientY);
+      const next = Math.min(2, Math.max(0.4, CS.view.z * (e.deltaY > 0 ? 0.9 : 1.1)));
+      CS.view.z = next;
+      const rc = panel.getBoundingClientRect();
+      CS.view.x = e.clientX - rc.left - before.x * next;
+      CS.view.y = e.clientY - rc.top - before.y * next;
+      applyView();
+      drawLinks();
+    } else {
+      CS.view.x -= e.deltaX;
+      CS.view.y -= e.deltaY;
+      applyView();
+    }
+  }, { passive: false });
+}
+
+function selectNode(id) {
+  if (CS.sel === id) return;
+  CS.sel = id;
+  const box = $('canvasNodes');
+  if (box) {
+    Array.prototype.forEach.call(box.querySelectorAll('.cnode'), function (el) {
+      el.classList.toggle('selected', el.getAttribute('data-node') === id);
+    });
+  }
+  renderDrawer();
+}
+
+function startNodeDrag(el, id, e) {
+  const r = curRule();
+  if (!r) return;
+  const n = (r.nodes || []).filter(function (x) { return x.id === id; })[0];
+  if (!n) return;
+  const start = toCanvas(e.clientX, e.clientY);
+  const ox = Number(n.x) || 0, oy = Number(n.y) || 0;
+  const mv = function (ev) {
+    const p = toCanvas(ev.clientX, ev.clientY);
+    n.x = Math.round(ox + (p.x - start.x));
+    n.y = Math.round(oy + (p.y - start.y));
+    el.style.left = n.x + 'px';
+    el.style.top = n.y + 'px';
+    drawLinks();
+  };
+  const up = function () {
+    document.removeEventListener('mousemove', mv);
+    document.removeEventListener('mouseup', up);
+  };
+  document.addEventListener('mousemove', mv);
+  document.addEventListener('mouseup', up);
+}
+
+function startPan(e) {
+  const panel = $('canvasPanel');
+  const sx = e.clientX, sy = e.clientY;
+  const ox = CS.view.x, oy = CS.view.y;
+  panel.classList.add('panning');
+  const mv = function (ev) {
+    CS.view.x = ox + (ev.clientX - sx);
+    CS.view.y = oy + (ev.clientY - sy);
+    applyView();
+  };
+  const up = function () {
+    panel.classList.remove('panning');
+    document.removeEventListener('mousemove', mv);
+    document.removeEventListener('mouseup', up);
+  };
+  document.addEventListener('mousemove', mv);
+  document.addEventListener('mouseup', up);
+}
+
+let rubberPath = null;
+function startLink(port, e) {
+  const dir = port.getAttribute('data-dir');
+  if (dir !== 'out') { toast('请从节点右侧圆点拖出连线'); return; }
+  e.stopPropagation();
+  CS.link = {
+    from: port.getAttribute('data-node'),
+    fromPort: port.getAttribute('data-port'),
+    to: null,
+    toPort: null,
+    fromEl: port
+  };
+  port.classList.add('active');
+  moveLink(e);
+}
+
+function moveLink(e) {
+  const layer = $('rubberLayer');
+  if (!layer || !CS.link) return;
+  const a = portPos(CS.link.fromEl);
+  const p = toCanvas(e.clientX, e.clientY);
+  if (!rubberPath) {
+    rubberPath = document.createElementNS(NS, 'path');
+    rubberPath.setAttribute('class', 'rubber-line');
+    layer.appendChild(rubberPath);
+  }
+  rubberPath.setAttribute('d', 'M' + a.x + ',' + a.y + ' C' + (a.x + 60) + ',' + a.y +
+    ' ' + (p.x - 60) + ',' + p.y + ' ' + p.x + ',' + p.y);
+
+  // 目标高亮
+  const box = $('canvasNodes');
+  if (!box) return;
+  const hover = document.elementFromPoint(e.clientX, e.clientY);
+  const target = hover && hover.closest ? hover.closest('.c-port[data-dir="in"]') : null;
+  Array.prototype.forEach.call(box.querySelectorAll('.c-port-in'), function (el) {
+    el.classList.toggle('hover-target', el === target);
+  });
+}
+
+function finishLink(e) {
+  const link = CS.link;
+  CS.link = null;
+  if (rubberPath && rubberPath.parentNode) rubberPath.parentNode.removeChild(rubberPath);
+  rubberPath = null;
+  const box = $('canvasNodes');
+  if (box) {
+    Array.prototype.forEach.call(box.querySelectorAll('.c-port-in'), function (el) {
+      el.classList.remove('hover-target');
+    });
+  }
+  if (!link) return;
+  if (link.fromEl) link.fromEl.classList.remove('active');
+  const hover = document.elementFromPoint(e.clientX, e.clientY);
+  const target = hover && hover.closest ? hover.closest('.c-port[data-dir="in"]') : null;
+  if (!target) { drawLinks(); return; }
+  const toId = target.getAttribute('data-node');
+  if (toId === link.from) { toast('不能连接到自身'); drawLinks(); return; }
+  const r = curRule();
+  if (!r) return;
+  if (!Array.isArray(r.links)) r.links = [];
+  const exists = r.links.some(function (l) {
+    return l.from === link.from && l.to === toId &&
+      (l.fromPort || 'out') === (link.fromPort || 'out') &&
+      (l.toPort || 'in') === target.getAttribute('data-port');
+  });
+  if (exists) { toast('该连线已存在'); drawLinks(); return; }
+  r.links.push({
+    id: uid('l'),
+    from: link.from,
+    fromPort: link.fromPort || 'out',
+    to: toId,
+    toPort: target.getAttribute('data-port') || 'in'
+  });
+  drawLinks();
+}
+
+function delSelectedNode() {
+  const r = curRule();
+  if (!r || !CS.sel) { toast('请先选中要删除的节点'); return; }
+  r.nodes = (r.nodes || []).filter(function (n) { return n.id !== CS.sel; });
+  r.links = (r.links || []).filter(function (l) { return l.from !== CS.sel && l.to !== CS.sel; });
+  CS.sel = null;
+  renderCanvas();
+  renderDrawer();
+}
+
+/* ============================================================
+ * 八、右侧属性抽屉
+ * ============================================================ */
+function openDrawer() { renderDrawer(); }
+
+function renderDrawer() {
+  const box = $('canvasDrawer');
+  if (!box) return;
+  const r = curRule();
+  const n = r && CS.sel ? (r.nodes || []).filter(function (x) { return x.id === CS.sel; })[0] : null;
+  if (!n) { box.style.display = 'none'; box.innerHTML = ''; return; }
+
+  const title = NEW_TYPES[n.type] || n.type;
+  let body = '';
+
+  {
+    const d = DEFS[n.type] || { fs: [] };
+    (d.fs || []).forEach(function (f) {
+      if (f.t === 'note') {
+        body += '<div class="drawer-sec">' + esc(f.tip || '') + '</div>';
+        return;
+      }
+      const v = n[f.k];
+      const id = 'f_' + f.k;
+      if (f.t === 'area') {
+        body += '<div class="dfrm"><label>' + esc(f.l) + '</label>' +
+          '<textarea id="' + id + '" data-fk="' + esc(f.k) + '" placeholder="' + esc(f.ph || '') + '">' + esc(v || '') + '</textarea>' +
+          (f.tip ? '<div class="tip">' + esc(f.tip) + '</div>' : '') + '</div>';
+      } else if (f.t === 'bool') {
+        body += '<div class="dfrm bool"><input type="checkbox" id="' + id + '" data-fk="' + esc(f.k) + '" data-ft="bool"' + (v ? ' checked' : '') + '>' +
+          '<label for="' + id + '">' + esc(f.l) + '</label></div>';
+      } else if (f.t === 'sel') {
+        body += '<div class="dfrm"><label>' + esc(f.l) + '</label><select id="' + id + '" data-fk="' + esc(f.k) + '">' +
+          (f.o || []).map(function (o) {
+            return '<option value="' + esc(o[0]) + '"' + (String(v == null ? '' : v) === String(o[0]) ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+          }).join('') + '</select>' +
+          (f.tip ? '<div class="tip">' + esc(f.tip) + '</div>' : '') + '</div>';
+      } else if (f.t === 'tag' || f.t === 'var') {
+        const dl = f.t === 'tag' ? 'cvTagList' : 'cvVarList';
+        body += '<div class="dfrm"><label>' + esc(f.l) + '</label>' +
+          '<input type="text" id="' + id + '" data-fk="' + esc(f.k) + '" list="' + dl + '" value="' + esc(v == null ? '' : v) + '" placeholder="' + esc(f.ph || '') + '">' +
+          (f.tip ? '<div class="tip">' + esc(f.tip) + '</div>' : '') + '</div>';
+      } else if (f.t === 'num') {
+        body += '<div class="dfrm"><label>' + esc(f.l) + '</label>' +
+          '<input type="number" id="' + id + '" data-fk="' + esc(f.k) + '" data-ft="num" value="' + esc(v == null ? '' : v) + '">' +
+          (f.tip ? '<div class="tip">' + esc(f.tip) + '</div>' : '') + '</div>';
+      } else {
+        body += '<div class="dfrm"><label>' + esc(f.l) + '</label>' +
+          '<input type="text" id="' + id + '" data-fk="' + esc(f.k) + '" value="' + esc(v == null ? '' : v) + '" placeholder="' + esc(f.ph || '') + '">' +
+          (f.tip ? '<div class="tip">' + esc(f.tip) + '</div>' : '') + '</div>';
+      }
+    });
+    body += '<div class="drawer-sec">节点 ID：' + esc(n.id) + '</div>';
+  }
+
+  box.style.display = 'flex';
+  box.innerHTML =
+    '<div class="canvas-drawer-hd"><i class="dot"></i>' + esc(title) +
+    '<span class="sp"></span>' +
+    '<span class="dbtn danger" id="btnDrawerDel" title="删除节点">' +
+    '<svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor"><path d="M8.8 3.5a1 1 0 0 1 1 1h1.4a1 1 0 1 1 2 0h1.3a1.5 1.5 0 0 1 1.5 1.5v.6H3v-.6a1.5 1.5 0 0 1 1.5-1.5h1.3a1 1 0 0 1 1-1h2Zm-3.6 4.2h9.6l-.6 7.4a1.5 1.5 0 0 1-1.5 1.4H6.3a1.5 1.5 0 0 1-1.5-1.4l-.6-7.4Z"></path></svg>' +
+    '</span>' +
+    '<span class="dbtn" id="btnDrawerClose" title="收起">' +
+    '<svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor"><path d="M13.536 7.596a.8.8 0 1 0-1.132-1.132L10 8.87 7.596 6.464a.8.8 0 1 0-1.132 1.132L8.87 10l-2.405 2.404a.8.8 0 1 0 1.132 1.132L10 11.13l2.404 2.405a.8.8 0 1 0 1.132-1.132L11.13 10l2.405-2.404Z"></path></svg>' +
+    '</span></div>' +
+    '<div class="canvas-drawer-bd">' + body + '</div>' +
+    tagDatalists();
+
+  bindDrawer(n);
+}
+
+function tagDatalists() {
+  const tags = CS.tags.map(function (t) {
+    return '<option value="' + esc(t.tag) + '" label="' + esc(t.desc || t.tag) + '"></option>';
+  }).join('');
+  const vars = CS.varNames.map(function (v) {
+    return '<option value="' + esc(v) + '"></option>';
+  }).join('');
+  return '<datalist id="cvTagList">' + tags + '</datalist><datalist id="cvVarList">' + vars + '</datalist>';
+}
+
+function bindDrawer(n) {
+  const box = $('canvasDrawer');
+  if (!box) return;
+  const cl = $('btnDrawerClose');
+  if (cl) cl.addEventListener('click', function () { selectNode(null); });
+  const dl = $('btnDrawerDel');
+  if (dl) dl.addEventListener('click', delSelectedNode);
+
+  Array.prototype.forEach.call(box.querySelectorAll('[data-fk]'), function (el) {
+    const k = el.getAttribute('data-fk');
+    const isBool = el.getAttribute('data-ft') === 'bool' || el.type === 'checkbox';
+    const isNum = el.getAttribute('data-ft') === 'num';
+    const handler = function () {
+      if (isBool) n[k] = !!el.checked;
+      else if (isNum) n[k] = el.value === '' ? '' : Number(el.value);
+      else n[k] = el.value;
+      // 摘要实时刷新
+      const card = document.querySelector('#canvasNodes .cnode[data-node="' + n.id + '"]');
+      if (card) {
+        const bd = card.querySelector('.cnode-bd');
+        const hd = card.querySelector('.cnode-hd .txt');
+        const sum = nodeSummary(n);
+        if (bd) bd.textContent = sum;
+        if (hd) hd.setAttribute('title', (NEW_TYPES[n.type] || n.type) + '｜' + sum);
+      }
+    };
+    el.addEventListener('change', handler);
+    el.addEventListener('input', function () { if (el.tagName !== 'TEXTAREA') handler(); });
+    if (el.tagName === 'TEXTAREA') el.addEventListener('blur', handler);
+  });
+
+}
+
+/* ============================================================
+ * 九、工具条 / 菜单 / 弹层
+ * ============================================================ */
+function renderToolbarState() {
+  const r = curRule();
+  const name = $('canvasRuleName');
+  if (name) name.value = r ? (r.name || '') : '';
+  const st = $('canvasStatus');
+  if (st) {
+    const on = r ? r.enabled !== false : true;
+    st.classList.toggle('off', !on);
+    st.innerHTML = '<i class="graph-toolbare-status-icon"></i>' + (on ? '已启用' : '已停用');
+    st.title = '点击切换启用 / 停用';
+  }
+}
+
+function bindToolbar() {
+  const name = $('canvasRuleName');
+  if (name) {
+    const fit = function () {
+      name.style.width = '12px';
+      name.style.width = Math.min(280, Math.max(24, name.scrollWidth + 8)) + 'px';
+    };
+    name.addEventListener('input', fit);
+    name.addEventListener('change', function () {
+      const r = curRule();
+      if (r) r.name = name.value;
+      renderTabs();
+    });
+    setTimeout(fit, 0);
+  }
+  const st = $('canvasStatus');
+  if (st) st.addEventListener('click', function () {
+    const r = curRule();
+    if (!r) return;
+    r.enabled = r.enabled === false;
+    renderToolbarState();
+    toast(r.enabled ? '规则已启用（记得保存）' : '规则已停用（记得保存）');
+  });
+  const sv = $('btnCanvasSave');
+  if (sv) sv.addEventListener('click', canvasSave);
+  const dn = $('btnDelNode');
+  if (dn) dn.addEventListener('click', delSelectedNode);
+  const cl = $('btnClear');
+  if (cl) cl.addEventListener('click', function () {
+    const r = curRule();
+    if (!r || !(r.nodes || []).length) { toast('画布已经是空的'); return; }
+    showConfirm('清空画布', '将删除当前规则内的全部节点与连线（共 ' + (r.nodes || []).length + ' 个节点），是否继续？', function () {
+      r.nodes = [];
+      r.links = [];
+      CS.sel = null;
+      renderAll();
+    });
+  });
+  const cfg = $('btnRuleCfg');
+  if (cfg) cfg.addEventListener('click', ruleSettingDialog);
+  const ts = $('btnTest');
+  if (ts) ts.addEventListener('click', runTest);
+  const zm = $('btnZoom');
+  if (zm) zm.addEventListener('click', function (e) {
+    e.stopPropagation();
+    toggleMenu($('zoomMenu'));
+  });
+  const zmenu = $('zoomMenu');
+  if (zmenu) zmenu.addEventListener('click', function (e) {
+    const it = e.target.closest ? e.target.closest('[data-z]') : null;
+    if (!it) return;
+    const z = it.getAttribute('data-z');
+    if (z === 'fit') { CS.view = { x: 0, y: 0, z: 1 }; }
+    else CS.view.z = Number(z) || 1;
+    applyView();
+    drawLinks();
+    hideMenu($('zoomMenu'));
+  });
+  const hm = $('helpMenu');
+  if (hm) hm.addEventListener('click', function (e) {
+    const it = e.target.closest ? e.target.closest('[data-k]') : null;
+    if (!it) return;
+    hideMenu(hm);
+    const k = it.getAttribute('data-k');
+    if (k === 'back') { backToLive(); return; }
+    if (k === 'setting') { ruleSettingDialog(); return; }
+    if (k === 'shortcut') {
+      showModal('快捷键指南',
+        '<ul><li>Delete / Backspace：删除选中节点</li>' +
+        '<li>Ctrl + S：保存规则</li>' +
+        '<li>Esc：关闭属性面板 / 菜单</li>' +
+        '<li>滚轮：平移画布；Ctrl + 滚轮：缩放画布</li>' +
+        '<li>双击节点：打开属性面板</li></ul>');
+      return;
+    }
+    const NAMES = { question: '问题反馈', community: '交流社区', updateLog: '更新日志', 'help-center': '使用教程' };
+    showModal(NAMES[k] || '提示', '<div style="line-height:2;color:var(--text-color-level2)">本页为本地离线版，' +
+      esc(NAMES[k] || '') + '入口保留占位。如需交流与反馈，请联系运维负责人。</div>');
+  });
+  document.addEventListener('click', function () {
+    hideMenu($('zoomMenu'));
+    hideMenu($('helpMenu'));
+  });
+  document.addEventListener('keydown', function (e) {
+    const tag = (e.target && e.target.tagName) || '';
+    const editing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    if (e.key === 'Escape') {
+      hideMenu($('zoomMenu'));
+      hideMenu($('helpMenu'));
+      if (!editing) selectNode(null);
+      return;
+    }
+    if (editing) return;
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (CS.sel) { e.preventDefault(); delSelectedNode(); }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 's') {
+      e.preventDefault();
+      canvasSave();
+    }
+  });
+}
+
+function toggleMenu(el) {
+  if (!el) return;
+  const show = el.style.display === 'none' || !el.style.display;
+  hideMenu($('zoomMenu'));
+  hideMenu($('helpMenu'));
+  el.style.display = show ? 'block' : 'none';
+}
+function hideMenu(el) { if (el) el.style.display = 'none'; }
+
+function ruleSettingDialog() {
+  const r = curRule();
+  if (!r) return;
+  const html =
+    '<div class="row"><label>规则名称</label><input type="text" id="cfgName" value="' + esc(r.name || '') + '"></div>' +
+    '<div class="row"><label>启用</label><input type="checkbox" id="cfgEnabled"' + (r.enabled === false ? '' : ' checked') + ' style="width:auto"></div>' +
+    '<div class="row"><label>持续时间(s)</label><input type="number" id="cfgDur" value="' + Number(r.duration || 0) + '"></div>' +
+    '<div class="row"><label>通知保持</label><select id="cfgHold">' +
+    [['auto', '条件恢复即复位'], ['timed', '保持指定秒数'], ['latch', '人工确认后复位']].map(function (o) {
+      return '<option value="' + o[0] + '"' + ((r.hold || 'timed') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+    }).join('') + '</select></div>' +
+    '<div class="row"><label>保持秒数</label><input type="number" id="cfgHoldSec" value="' + Number(r.holdSeconds == null ? 15 : r.holdSeconds) + '"></div>' +
+    '<div class="tip" style="font-size:11px;color:var(--text-color-level4);line-height:1.7">' +
+    '持续时间：条件成立需持续该秒数后才通知；通知保持：报警弹窗/推送的复位方式（沿用现有报警链路）。</div>';
+  showModalForm('规则设置', html, function (root) {
+    r.name = root.querySelector('#cfgName').value;
+    r.enabled = !!root.querySelector('#cfgEnabled').checked;
+    r.duration = Math.max(0, Number(root.querySelector('#cfgDur').value) || 0);
+    r.hold = root.querySelector('#cfgHold').value;
+    r.holdSeconds = Math.max(0, Number(root.querySelector('#cfgHoldSec').value) || 0);
+    renderAll();
+    toast('规则设置已更新（记得保存）');
+  });
+}
+
+async function runTest() {
+  const r = curRule();
+  if (!r) return;
+  if (!(r.nodes || []).length) { toast('画布为空，无法测试'); return; }
   try {
-    const vr = await window.api.loadVars();
-    CS.varNames = (vr.vars || []).map(v => v.name);
+    const res = await window.api.testCanvas({ ruleId: r.id, tagValues: {}, varValues: {} });
+    if (res && res.ok === false) { showModal('测试结果', '<div>测试失败：' + esc(res.error || '') + '</div>'); return; }
+    const lines = [
+      ['规则', (res.name || r.name || '')],
+      ['是否触发', res.active ? '是（条件当前成立）' : '否'],
+      ['触发值', String(res.value == null ? '-' : res.value)],
+      ['报警级别', res.level || '-'],
+      ['通知标题', res.title || '-'],
+      ['通知正文', String(res.note || '-').replace(/\n/g, '<br>')],
+      ['邮件推送', res.mail ? '是' : '否']
+    ];
+    showModal('测试结果（不写入运行状态）',
+      '<table style="width:100%;table-layout:fixed">' + lines.map(function (l) {
+        return '<tr><td style="width:88px;color:var(--text-color-level3)">' + esc(l[0]) +
+          '</td><td style="white-space:normal">' + l[1] + '</td></tr>';
+      }).join('') + '</table>');
+  } catch (e) {
+    showModal('测试结果', '<div>测试失败：' + esc(e.message) + '</div>');
+  }
+}
+
+function showConfirm(title, text, onOk) {
+  const ov = document.createElement('div');
+  ov.className = 'cv-modal-ov';
+  ov.innerHTML = '<div class="cv-modal"><h3>' + esc(title) + '</h3>' +
+    '<div style="line-height:1.8;color:var(--text-color-level2)">' + esc(text) + '</div>' +
+    '<div class="ft"><button class="cancel">取消</button><button class="ok">确认</button></div></div>';
+  ($('page-canvas') || document.body).appendChild(ov);
+  const close = function () { if (ov.parentNode) ov.parentNode.removeChild(ov); };
+  ov.querySelector('.cancel').addEventListener('click', close);
+  ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+  ov.querySelector('.ok').addEventListener('click', function () { close(); onOk(); });
+}
+
+function showModal(title, html) {
+  const ov = document.createElement('div');
+  ov.className = 'cv-modal-ov';
+  ov.innerHTML = '<div class="cv-modal"><h3>' + esc(title) + '</h3><div>' + html + '</div>' +
+    '<div class="ft"><button class="ok">知道了</button></div></div>';
+  ($('page-canvas') || document.body).appendChild(ov);
+  const close = function () { if (ov.parentNode) ov.parentNode.removeChild(ov); };
+  ov.querySelector('.ok').addEventListener('click', close);
+  ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+}
+
+function showModalForm(title, html, onOk) {
+  const ov = document.createElement('div');
+  ov.className = 'cv-modal-ov';
+  ov.innerHTML = '<div class="cv-modal"><h3>' + esc(title) + '</h3><div class="bd">' + html + '</div>' +
+    '<div class="ft"><button class="cancel">取消</button><button class="ok">确定</button></div></div>';
+  ($('page-canvas') || document.body).appendChild(ov);
+  const close = function () { if (ov.parentNode) ov.parentNode.removeChild(ov); };
+  ov.querySelector('.cancel').addEventListener('click', close);
+  ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+  ov.querySelector('.ok').addEventListener('click', function () { close(); onOk(ov.querySelector('.bd')); });
+}
+
+/* ============================================================
+ * 十、整体渲染与初始化
+ * ============================================================ */
+function renderAll() {
+  renderTabs();
+  renderToolbarState();
+  renderCanvas();
+  renderDrawer();
+}
+
+async function reloadVars() {
+  try {
+    const t = await window.api.loadTags();
+    CS.tags = normalizeTags(t);
+  } catch (e) { CS.tags = []; }
+  try {
+    const v = await window.api.loadVars();
+    CS.varNames = normalizeVars(v);
   } catch (e) { CS.varNames = []; }
-};
+  CS.tagMap = {};
+  CS.tags.forEach(function (t) { CS.tagMap[t.tag] = t; });
+  if (CS.sel) renderDrawer();
+}
+
+/* 画布页全屏：进入画布页时隐藏应用外壳（顶栏/标签栏/状态栏），
+ * 使画面与参考的极客版编辑器一致；离开画布页自动恢复。 */
+function syncShell() {
+  const pg = $('page-canvas');
+  const on = !!(pg && pg.classList.contains('active'));
+  document.body.classList.toggle('cv-full', on);
+  if (on) setTimeout(function () { applyView(); drawLinks(); }, 0);
+}
+
+/* 返回主界面（实时点位），同时恢复应用外壳 */
+function backToLive() {
+  const tab = document.querySelector('#tabs .tab[data-t="live"]');
+  if (tab) tab.click();
+}
+
+function canvasInitBindings() {
+  renderSide();
+  bindTabs();
+  bindSide();
+  bindToolbar();
+  bindCanvas();
+  reloadVars().then(function () { return canvasLoad(); });
+  window.addEventListener('resize', function () { drawLinks(); });
+  const tabsBox = $('tabs');
+  if (tabsBox) tabsBox.addEventListener('click', function () { setTimeout(syncShell, 0); });
+  const lgBack = document.querySelector('.app-header-menu-left');
+  if (lgBack) {
+    lgBack.style.cursor = 'pointer';
+    lgBack.title = '返回实时点位';
+    lgBack.addEventListener('click', backToLive);
+  }
+  syncShell();
+}
+
+window.canvasInitBindings = canvasInitBindings;
+window.__canvasReloadVars = reloadVars;
+
+})();

@@ -31,15 +31,16 @@
     <div class="page active" id="page-live">
       <div class="toolbar">
         <button id="btnAddTag" class="primary">＋ 添加位号</button>
-        <button id="btnImportTags">粘贴导入</button>
         <button id="btnImportExcel">Excel 导入</button>
         <button id="btnDevMgr">装置分类</button>
-        <button id="btnTestRule">规则测试</button>
         <button id="btnFetchMeta">拉取描述/单位</button>
         <span class="sep"></span>
         <button id="btnLiveRefresh">刷新列表</button>
         <button id="btnLiveExpandAll">全部展开</button>
         <button id="btnLiveCollapseAll">全部折叠</button>
+        <button id="btnBatchDel">批量删除</button>
+        <button id="btnBatchGo" style="display:none">删除选中</button>
+        <button id="btnBatchCancel" style="display:none">退出批量</button>
         <span id="liveCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
       </div>
       <div style="color:#94a3b8;font-size:11px;margin-bottom:8px;">
@@ -49,81 +50,106 @@
     </div>
 
     <div class="page" id="page-canvas">
-      <div class="canvas-toolbar">
-        <select id="canvasRuleSelect"></select>
-        <button id="btnCanvasNew">＋ 新建规则</button>
-        <button id="btnCanvasDelete">删除当前</button>
-        <span class="sep"></span>
-        <span style="color:#94a3b8;font-size:12px;">
-          提示：从左侧点击或拖拽节点到画布；从节点右侧圆点按住拖到目标节点左侧圆点即可连线
-        </span>
-        <span style="flex:1"></span>
-        <button id="btnCanvasSave" class="primary">保存</button>
-      </div>
-      <div class="canvas-props" id="canvasProps"></div>
-      <div class="canvas-wrap">
-        <div class="canvas-side" id="canvasSide">
-          <div class="side-group">
-            <div class="side-group-title">数据源</div>
-            <div class="side-item" data-type="tag"><span class="ico">📈</span>位号取值</div>
-            <div class="side-item" data-type="bool"><span class="ico">🔘</span>布尔位号</div>
-            <div class="side-item" data-type="tagStatus"><span class="ico">✔</span>位号质量</div>
-            <div class="side-item" data-type="constN"><span class="ico">#</span>常量</div>
+      <div class="app-frame">
+        <div class="app-header">
+          <div class="app-header-menu">
+            <div class="app-header-menu-item app-header-menu-left" title="高级规则 · 米家自动化极客版">
+              <span class="anticon icon-logo">
+                <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path clip-rule="evenodd" d="m15.961 5.795-5.299-3.026a1.37 1.37 0 0 0-1.36 0L4.003 5.795a1.37 1.37 0 0 0-.69 1.19v6.027c0 .492.263.947.69 1.19l5.3 3.027c.42.24.938.24 1.359 0l5.3-3.026c.426-.244.69-.699.69-1.19V6.984a1.37 1.37 0 0 0-.69-1.19ZM6.993 8.953a.633.633 0 0 1 .633-1.096l2.287 1.32 2.287-1.32a.633.633 0 1 1 .633 1.096l-2.291 1.323c.013.05.02.104.02.16v2.16a.633.633 0 1 1-1.265 0v-2.16c0-.05.005-.098.016-.143l-2.32-1.34Z"></path></svg>
+              </span>
+            </div>
+            <div class="app-header-menu-tabs" id="ruleTabs"></div>
+            <div class="app-header-menu-item app-header-menu-add" id="btnRuleAdd" title="新建规则">
+              <span class="anticon">
+                <svg width="1em" height="1em" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" fill="currentColor" aria-hidden="true" focusable="false"><path d="M10.8 5.8a.8.8 0 0 0-1.6 0v3.4H5.8a.8.8 0 1 0 0 1.6h3.4v3.4a.8.8 0 0 0 1.6 0v-3.4h3.4a.8.8 0 0 0 0-1.6h-3.4V5.8Z"></path></svg>
+              </span>
+            </div>
           </div>
-          <div class="side-group">
-            <div class="side-group-title">判断</div>
-            <div class="side-item" data-type="compare"><span class="ico">⇄</span>比较</div>
-            <div class="side-item" data-type="range"><span class="ico">↔</span>区间</div>
-            <div class="side-item" data-type="deviation"><span class="ico">≶</span>偏差</div>
-            <div class="side-item" data-type="rate"><span class="ico">↗</span>变化率</div>
-            <div class="side-item" data-type="textCmp"><span class="ico">🔤</span>文本判断</div>
-          </div>
-          <div class="side-group">
-            <div class="side-group-title">逻辑</div>
-            <div class="side-item" data-type="logic"><span class="ico">⋀</span>逻辑与/或</div>
-            <div class="side-item" data-type="not"><span class="ico">!</span>非</div>
-            <div class="side-item" data-type="xor"><span class="ico">⊕</span>异或</div>
-          </div>
-          <div class="side-group">
-            <div class="side-group-title">流程控制</div>
-            <div class="side-item" data-type="if"><span class="ico">◈</span>条件分支（if/else）</div>
-            <div class="side-item" data-type="merge"><span class="ico">⧉</span>合并分支</div>
-          </div>
-          <div class="side-group">
-            <div class="side-group-title">时间</div>
-            <div class="side-item" data-type="duration"><span class="ico">⏱</span>持续时间</div>
-            <div class="side-item" data-type="delay"><span class="ico">⏳</span>延时</div>
-            <div class="side-item" data-type="hold"><span class="ico">⏸</span>保持（防抖）</div>
-            <div class="side-item" data-type="pulse"><span class="ico">⚡</span>脉冲</div>
-            <div class="side-item" data-type="timeRange"><span class="ico">🕐</span>时间段</div>
-          </div>
-          <div class="side-group">
-            <div class="side-group-title">状态 / 记忆</div>
-            <div class="side-item" data-type="latch"><span class="ico">🔒</span>锁存（SR/RS）</div>
-            <div class="side-item" data-type="toggle"><span class="ico">🔁</span>翻转</div>
-            <div class="side-item" data-type="edge"><span class="ico">📐</span>边沿检测</div>
-            <div class="side-item" data-type="counter"><span class="ico">🔢</span>计数器</div>
-          </div>
-          <div class="side-group">
-            <div class="side-group-title">运算</div>
-            <div class="side-item" data-type="arith"><span class="ico">±</span>算术运算</div>
-            <div class="side-item" data-type="mathFn"><span class="ico">ƒ</span>数学函数</div>
-            <div class="side-item" data-type="scale"><span class="ico">⤢</span>线性映射</div>
-            <div class="side-item" data-type="stat"><span class="ico">Σ</span>窗口统计</div>
-          </div>
-          <div class="side-group">
-            <div class="side-group-title">变量</div>
-            <div class="side-item" data-type="varGet"><span class="ico">R</span>读取变量</div>
-            <div class="side-item" data-type="varSet"><span class="ico">W</span>写入变量</div>
-          </div>
-          <div class="side-group">
-            <div class="side-group-title">通知</div>
-            <div class="side-item" data-type="trigger"><span class="ico">🔔</span>自定义通知</div>
+          <div class="app-header-right">
+            <span class="icon-square icon-more" id="btnAppMore" title="更多">
+              <svg width="1em" height="1em" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11 6a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM11 10a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM10 15a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"></path></svg>
+            </span>
           </div>
         </div>
-        <div class="canvas-area" id="canvasArea">
-          <svg class="canvas-links" id="canvasLinks"></svg>
-          <div class="canvas-nodes" id="canvasNodes"></div>
+
+        <div class="app-body">
+          <div class="common-page">
+            <div class="main-content">
+              <div class="graph">
+                <div class="panel" id="canvasPanel">
+                  <div id="canvas-viewport">
+                    <svg class="canvas-links" id="canvasLinks" width="0" height="0">
+                      <g id="linkLayer"></g>
+                      <g id="rubberLayer"></g>
+                    </svg>
+                    <div class="canvas-nodes" id="canvasNodes"></div>
+                  </div>
+                  <div class="panel-empty absolute-stretch" id="canvasEmpty">拖拽左侧内容至这里创建</div>
+
+                  <div class="graph-toolbar" id="canvasToolbar">
+                    <div class="graph-toolbar-name-wapper">
+                      <input class="ant-input graph-toolbar-name" id="canvasRuleName" type="text" value="1" spellcheck="false">
+                      <div class="graph-toolbare-status" id="canvasStatus"><i class="graph-toolbare-status-icon"></i>已启用</div>
+                    </div>
+                    <div class="graph-toolbar-action">
+                      <span class="anticon graph-toolbar-action-item disabled" id="btnUndo" title="撤销（暂不可用）">
+                        <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7.3 4.3a1 1 0 0 1 0 1.4L5.4 7.6h5.1a5 5 0 0 1 0 10H7a1 1 0 1 1 0-2h3.5a3 3 0 0 0 0-6H5.4l1.9 1.9a1 1 0 0 1-1.4 1.4l-3.6-3.6a1 1 0 0 1 0-1.4l3.6-3.6a1 1 0 0 1 1.4 0Z"></path></svg>
+                      </span>
+                      <span class="anticon graph-toolbar-action-item disabled" id="btnRedo" title="重做（暂不可用）">
+                        <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12.7 4.3a1 1 0 0 1 1.4 0l3.6 3.6a1 1 0 0 1 0 1.4l-3.6 3.6a1 1 0 0 1-1.4-1.4l1.9-1.9H10a3 3 0 0 0 0 6h3.5a1 1 0 1 1 0 2H10a5 5 0 0 1 0-10h4.6l-1.9-1.9a1 1 0 0 1 0-1.4Z"></path></svg>
+                      </span>
+                      <div class="graph-toolbar-divider"></div>
+                      <span class="anticon graph-toolbar-action-item" id="btnDelNode" title="删除选中节点">
+                        <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M8.8 3.5a1 1 0 0 1 1 1h1.4a1 1 0 1 1 2 0h1.3a1.5 1.5 0 0 1 1.5 1.5v.6H3v-.6a1.5 1.5 0 0 1 1.5-1.5h1.3a1 1 0 0 1 1-1h2Zm-3.6 4.2h9.6l-.6 7.4a1.5 1.5 0 0 1-1.5 1.4H6.3a1.5 1.5 0 0 1-1.5-1.4l-.6-7.4Z"></path></svg>
+                      </span>
+                      <span class="anticon graph-toolbar-action-item" id="btnClear" title="清空画布节点">
+                        <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M16.6 3.4a2 2 0 0 1 0 2.8l-6.5 6.5.9.9a1 1 0 1 1-1.4 1.4l-3.3-3.3a1 1 0 0 1 0-1.4l5.4-5.4H4a1 1 0 1 1 0-2h8.8a2 2 0 0 1 1.5.6l2.3 2.3ZM7.1 13.6l1.4 1.4-1 1H4.2l2.9-2.4Z"></path></svg>
+                      </span>
+                      <span class="anticon graph-toolbar-action-item" id="btnRuleCfg" title="规则设置">
+                        <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm0 4.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4Z"></path><path d="M9.2 2.6a.9.9 0 0 1 .9-.8h1.8a.9.9 0 0 1 .9.8l.2 1.3.9.5 1.2-.7a.9.9 0 0 1 1.1.1l1.3 1.3a.9.9 0 0 1 .1 1.1l-.7 1.2.5.9 1.3.2a.9.9 0 0 1 .8.9v1.8a.9.9 0 0 1-.8.9l-1.3.2-.5.9.7 1.2a.9.9 0 0 1-.1 1.1l-1.3 1.3a.9.9 0 0 1-1.1.1l-1.2-.7-.9.5-.2 1.3a.9.9 0 0 1-.9.8h-1.8a.9.9 0 0 1-.9-.8l-.2-1.3-.9-.5-1.2.7a.9.9 0 0 1-1.1-.1l-1.3-1.3a.9.9 0 0 1-.1-1.1l.7-1.2-.5-.9-1.3-.2a.9.9 0 0 1-.8-.9v-1.8a.9.9 0 0 1 .8-.9l1.3-.2.5-.9-.7-1.2a.9.9 0 0 1 .1-1.1l1.3-1.3a.9.9 0 0 1 1.1-.1l1.2.7.9-.5.2-1.3Zm1.6 2.1-.3 1.6-2.1 1.2-1.5-.9-.7.7.9 1.5-1.2 2.1-1.6.3v1l1.6.3 1.2 2.1-.9 1.5.7.7 1.5-.9 2.1 1.2.3 1.6h1l.3-1.6 2.1-1.2 1.5.9.7-.7-.9-1.5 1.2-2.1 1.6-.3v-1l-1.6-.3-1.2-2.1.9-1.5-.7-.7-1.5.9-2.1-1.2-.3-1.6h-1Z" opacity=".55"></path></svg>
+                      </span>
+                      <span class="anticon graph-toolbar-action-item" id="btnTest" title="测试当前规则">
+                        <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7.5 2.2a1 1 0 0 1 1 1v.6h3v-.6a1 1 0 1 1 2 0v.6h.3a1.5 1.5 0 0 1 1.5 1.5v9.2a1.5 1.5 0 0 1-1.5 1.5h-8.6a1.5 1.5 0 0 1-1.5-1.5V5.3a1.5 1.5 0 0 1 1.5-1.5h.3v-.6a1 1 0 0 1 1-1Zm6.8 5.3H5.7v7.2h8.6V7.5Z"></path><path d="M9.4 12.9 8 11.5a.8.8 0 1 0-1.1 1.1l1.9 1.9 3.6-3.6a.8.8 0 1 0-1.1-1.1l-1.9 2.1Z"></path></svg>
+                      </span>
+                      <button type="button" class="ant-btn ant-btn-primary graph-toolbar-action-save-btn" id="btnCanvasSave"><span>保存</span></button>
+                      <div class="ant-dropdown-trigger graph-toolbar-action-scale" id="btnZoom">
+                        <span id="zoomText" style="width:40px;">100%</span>
+                        <span class="anticon icon-grey">
+                          <svg width="1em" height="1em" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false"><path d="M10.8 11.6 14 14.8a.8.8 0 1 1-1.1 1.1l-3.2-3.2-3.2 3.2A.8.8 0 1 1 5.4 14.8l3.2-3.2-3.2-3.2a.8.8 0 1 1 1.1-1.1l3.2 3.2 3.2-3.2a.8.8 0 1 1 1.1 1.1l-3.2 3.2Z" opacity="0"></path><path d="M10 12.3 6.6 8.9a.8.8 0 1 1 1.1-1.1L10 10.1l2.3-2.3a.8.8 0 1 1 1.1 1.1L10 12.3Z"></path></svg>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="graph-ele" id="cardBox">
+                  <div class="graph-ele-list" id="eleList"></div>
+                </div>
+              </div>
+
+              <div class="canvas-drawer" id="canvasDrawer" style="display:none"></div>
+
+              <ul class="ant-dropdown-menu app-header-help" id="helpMenu" style="display:none">
+                <li class="ant-dropdown-menu-item" data-k="back"><span class="ant-dropdown-menu-title-content">返回实时点位</span></li>
+                <li class="ant-dropdown-menu-item" data-k="question"><span class="ant-dropdown-menu-title-content">问题反馈</span></li>
+                <li class="ant-dropdown-menu-item" data-k="community"><span class="ant-dropdown-menu-title-content">交流社区</span></li>
+                <li class="ant-dropdown-menu-item" data-k="updateLog"><span class="ant-dropdown-menu-title-content">更新日志</span></li>
+                <li class="ant-dropdown-menu-item" data-k="help-center"><span class="ant-dropdown-menu-title-content">使用教程</span></li>
+                <li class="ant-dropdown-menu-item" data-k="shortcut"><span class="ant-dropdown-menu-title-content">快捷键指南</span></li>
+                <li class="ant-dropdown-menu-item" data-k="setting"><span class="ant-dropdown-menu-title-content">设置</span></li>
+              </ul>
+
+              <div class="zoom-menu" id="zoomMenu" style="display:none">
+                <div class="zoom-menu-item" data-z="fit">适应画布</div>
+                <div class="zoom-menu-item" data-z="0.5">50%</div>
+                <div class="zoom-menu-item" data-z="0.75">75%</div>
+                <div class="zoom-menu-item" data-z="1">100%</div>
+                <div class="zoom-menu-item" data-z="1.25">125%</div>
+                <div class="zoom-menu-item" data-z="1.5">150%</div>
+                <div class="zoom-menu-item" data-z="2">200%</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -279,48 +305,6 @@
     <div class="modal-foot">
       <button id="confirmModalCancel">取消</button>
       <button id="confirmModalOk" class="primary">确定</button>
-    </div>
-  </div>
-</div>
-
-<!-- 规则测试弹框 -->
-<div id="testModal" class="modal-ov" style="display:none;">
-  <div class="modal-box" style="width:560px;">
-    <h3>规则测试</h3>
-    <div class="mhint">只做一次离线判断，不写入真实数据：点位规则看阈值分级，高级规则看画布逻辑是否触发。</div>
-    <div class="adj-grid">
-      <div class="adj-row">
-        <label>测试对象</label>
-        <select id="testKind">
-          <option value="point">点位规则（阈值分级）</option>
-          <option value="canvas">高级规则（画布逻辑）</option>
-        </select>
-      </div>
-      <div id="testPointBox">
-        <div class="adj-row">
-          <label>位号</label>
-          <select id="testTag"></select>
-        </div>
-        <div class="adj-row">
-          <label>模拟值</label>
-          <input type="text" id="testValue" placeholder="例如 105.5">
-        </div>
-      </div>
-      <div id="testCanvasBox" style="display:none">
-        <div class="adj-row">
-          <label>规则</label>
-          <select id="testCanvasRule"></select>
-        </div>
-        <div id="testCanvasInputs" style="margin-top:8px"></div>
-        <div class="mhint" style="margin:6px 0 0">留空表示按当前实时值 / 变量当前值参与判断。</div>
-      </div>
-    </div>
-    <div id="testResult" style="margin-top:12px;padding:12px;background:#f8fafc;
-      border-radius:6px;font-size:12px;line-height:1.7;min-height:60px;
-      border:1px solid #e2e8f0;display:none"></div>
-    <div class="modal-foot">
-      <button id="testCancel">关闭</button>
-      <button id="testRun" class="primary">测试</button>
     </div>
   </div>
 </div>
