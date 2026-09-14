@@ -65,7 +65,9 @@
       "shortcutName": "SupOS-monitor",
       "artifactName": "${productName}-Setup-${version}.exe"
     },
-    "releaseInfo": "画布规则引擎仅支持新版信号链规则（model:signal），移除旧画布规则兼容代码；\n画布连线端口按数量动态定位、节点高度自适应，修复端口增多溢出节点；\n实时数据页移除「粘贴导入」「规则测试」入口；\n新增位号批量删除（勾选 + 二次确认）；\n修复启动后 WebSocket 已连接仍显示橙色「初始化中」的问题。\n\n详见仓库根目录 CHANGELOG.md。",
+    "releaseInfo": {
+      "releaseNotes": "画布规则引擎仅支持新版信号链规则（model:signal），移除旧画布规则兼容代码；\n画布连线端口按数量动态定位、节点高度自适应，修复端口过多时溢出节点；\n实时数据页移除「粘贴导入」「规则测试」入口；\n新增位号批量删除（勾选 + 二次确认）；\n修复启动后 WebSocket 已连接仍显示橙色「初始化中」的问题。\n详见 CHANGELOG.md。"
+    },
     "publish": [
       {
         "provider": "github",
