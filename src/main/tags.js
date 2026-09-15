@@ -4,8 +4,21 @@ const path = require('path');
 
 const FILE = path.join(app.getPath('userData'), 'tags.json');
 
-function load(){
-  if (!fs.existsSync(FILE)) return { points: [], liveOrder: [] };
+// ---- 读盘缓存 ----
+// 规则引擎每秒 tick 都要取一次点位表，渲染页刷新/snapshot 也会取；
+// 原实现每次都同步读盘 + JSON.parse，是主进程 CPU 占用的主要来源之一。
+// 这里按文件 mtime 做进程内缓存：文件没变就直接复用，写盘后立即更新缓存。
+let _cache = null;
+let _mtime = 0;
+
+function clone(d){
+  return {
+    points: (d.points || []).map(p => Object.assign({}, p)),
+    liveOrder: (d.liveOrder || []).slice()
+  };
+}
+
+function readFile(){
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, 'utf8'));
     return {
@@ -13,6 +26,17 @@ function load(){
       liveOrder: raw.liveOrder || []
     };
   } catch (e) { return { points: [], liveOrder: [] }; }
+}
+
+function load(){
+  let st = null;
+  try { st = fs.statSync(FILE); }
+  catch (e) { _cache = null; _mtime = 0; return { points: [], liveOrder: [] }; }
+  if (_cache && st.mtimeMs === _mtime) return clone(_cache);
+  const out = readFile();
+  _cache = out;
+  _mtime = st.mtimeMs;
+  return clone(out);
 }
 
 // 合并保存：传入 {points} 或 {liveOrder} 或两者，缺失的用现有值
@@ -23,6 +47,8 @@ function save(data){
     liveOrder: Array.isArray(data && data.liveOrder) ? data.liveOrder : cur.liveOrder
   };
   fs.writeFileSync(FILE, JSON.stringify(out, null, 2), 'utf8');
+  _cache = out;
+  try { _mtime = fs.statSync(FILE).mtimeMs; } catch (e) { _mtime = 0; }
   return true;
 }
 

@@ -12,7 +12,7 @@ async function exportConfig(){
 
   const out = {
     _app: 'SupOS-monitor',
-    _ver: '1.0.0',
+    _ver: (() => { try { return app.getVersion(); } catch (e) { return '0.0.0'; } })(),
     _exported: new Date().toISOString(),
     server: cfg.server,
     // 注意：username 保留，password 不导出

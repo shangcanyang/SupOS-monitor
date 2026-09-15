@@ -127,12 +127,20 @@ document.querySelectorAll('#tabs .tab').forEach(tab => {
 // ============================================================
 // 状态栏
 // ============================================================
+let APP_VER = '';        // 由主进程 app.getVersion() 填充，避免版本号在多处硬编码
+let APP_TIME = '';
+
 function updateStatusBar(){
   document.getElementById('sbRight').textContent =
-    'SupOS-monitor v1.0.0　·　' + new Date().toLocaleTimeString('zh-CN');
+    'SupOS-monitor v' + (APP_VER || '…') + '　·　' +
+    (APP_TIME || new Date().toLocaleTimeString('zh-CN'));
 }
 updateStatusBar();
-setInterval(updateStatusBar, 1000);
+setInterval(() => {
+  if (document.hidden) return;   // 后台/最小化时不再每秒重写状态栏（CPU 优化）
+  APP_TIME = new Date().toLocaleTimeString('zh-CN');
+  updateStatusBar();
+}, 1000);
 
 function setConn(state, text){
   document.getElementById('connDot').className = 'dot ' + state;
@@ -230,6 +238,7 @@ let liveDeviceMap = {};
 let liveCollapse = {};
 let liveSnapshot = {};
 let liveDevicePause = {};
+let liveSearch = {};      // 每个装置标题栏的搜索关键字（详细列表模式）
 let dragCtx = null;
 
 async function renderLive(){
@@ -261,9 +270,38 @@ async function renderLive(){
   document.getElementById('liveCount').textContent =
     '共 ' + points.length + ' 个位号，' + groups.length + ' 个装置';
 
+  buildLiveIndex(box, points);
   bindCardEvents();
+  bindSearchInputs();
+  for (const g of groups) applyDeviceFilter(g.name);
   await refreshLiveValues();
   updatePauseTimers();
+}
+
+// 建立 DOM 索引：位号 → 行元素 / 装置 → 位号列表 / 行内子元素缓存。
+// 刷新时直接查表，避免每秒对每个位号做一次 querySelector（CPU 优化）。
+let liveCardMap = {};
+let liveDevPoints = {};
+let livePointMap = {};
+
+function buildLiveIndex(box, points){
+  liveCardMap = {};
+  liveDevPoints = {};
+  livePointMap = {};
+  (box.querySelectorAll('.pcard[data-tag]') || []).forEach(c => {
+    const t = c.getAttribute('data-tag');
+    if (!t) return;
+    liveCardMap[t] = c;
+    c.__elVal = c.querySelector('[data-val]');
+    c.__elLv  = c.querySelector('[data-lv]');
+    c.__elT   = c.querySelector('[data-time]');
+  });
+  for (const p of points){
+    const dev = liveDeviceMap[p.tag];
+    if (!liveDevPoints[dev]) liveDevPoints[dev] = [];
+    liveDevPoints[dev].push(p);
+    livePointMap[p.tag] = p;
+  }
 }
 
 function groupByDevice(points, devices, liveOrder){
@@ -326,23 +364,46 @@ function groupHtml(g){
   const pauseBtn = paused
     ? '<button class="dev-pause-btn paused" data-pause-toggle="' + esc(g.name) + '">▶ 恢复</button>'
     : '<button class="dev-pause-btn" data-pause-toggle="' + esc(g.name) + '">⏸ 暂停</button>';
+  const kw = liveSearch[g.name] || '';
 
   return '<div class="live-dev-group' + (paused ? ' paused' : '') +
          '" data-dev="' + esc(g.name) + '">' +
     '<div class="live-dev-hd" data-toggle="' + esc(g.name) + '">' +
       '<span class="arrow">' + (collapsed ? '▶' : '▼') + '</span>' +
-      '<span>' + esc(g.name) + '</span>' +
+      '<span class="dev-name">' + esc(g.name) + '</span>' +
       '<span class="cnt">' + g.items.length + ' 个点位</span>' +
       (alarmCnt ? '<span class="alarm">⚠ 报警 ' + alarmCnt + '</span>' : '') +
       (paused ? '<span class="pause-status" data-pause-status="' + esc(g.name) + '">' +
                 pauseStatusText(g.name, now) + '</span>' : '') +
       '<span class="spacer"></span>' +
+      '<input class="dev-search" type="text" data-dev-search="' + esc(g.name) + '" ' +
+        'placeholder="搜索位号 / 描述" value="' + esc(kw) + '" ' +
+        'title="在本装置内按位号或描述筛选">' +
+      '<button class="dev-search-clear" data-dev-clear="' + esc(g.name) + '" ' +
+        'title="清除筛选"' + (kw ? '' : ' style="display:none"') + '>✕</button>' +
       pauseBtn +
     '</div>' +
     '<div class="live-dev-body" data-body="' + esc(g.name) + '" style="' +
          (collapsed ? 'display:none' : '') + '">' +
+      headRowHtml() +
       g.items.map(p => cardHtml(p, paused)).join('') +
+      '<div class="prow-empty" data-empty="' + esc(g.name) + '" style="display:none">' +
+        '没有匹配的位号</div>' +
     '</div>' +
+  '</div>';
+}
+
+// Windows 资源管理器「详细信息」视图的列头
+function headRowHtml(){
+  return '<div class="pcard prow-head">' +
+    '<span class="pc-chk-cell"></span>' +
+    '<span class="pc-tag">位号</span>' +
+    '<span class="pc-desc">描述</span>' +
+    '<span class="pc-val-cell">当前值</span>' +
+    '<span class="pc-unit">单位</span>' +
+    '<span class="pc-range">限值（LL / L / H / HH）</span>' +
+    '<span class="pc-lv">状态</span>' +
+    '<span class="pc-time">更新时间</span>' +
   '</div>';
 }
 
@@ -350,19 +411,65 @@ function cardHtml(p, muted){
   const dev = liveDeviceMap[p.tag] || '';
   return '<div class="pcard' + (muted ? ' muted' : '') + '" draggable="true" ' +
     'data-tag="' + esc(p.tag) + '" data-dev="' + esc(dev) + '">' +
-    (batchMode ? '<input type="checkbox" class="pc-chk" data-tag="' + esc(p.tag) + '">' : '') +
-    '<div class="pc-tag" title="' + esc(p.tag) + '">' + esc(p.tag) + '</div>' +
-    '<div class="pc-desc" title="' + esc(p.desc || '') + '">' +
-      (p.desc ? esc(p.desc) : '&nbsp;') + '</div>' +
-    '<div class="pc-range" data-range="' + esc(p.tag) + '" title="四级限值">' +
-      rangeText(p) + '</div>' +
-    '<div><span class="pc-val" data-val="' + esc(p.tag) + '">-</span>' +
-      '<span class="pc-unit">' + esc(p.unit || '') + '</span></div>' +
-    '<div class="pc-foot">' +
-      '<span class="pc-lv ok" data-lv="' + esc(p.tag) + '">-</span>' +
-      '<span data-time="' + esc(p.tag) + '">-</span>' +
-    '</div>' +
+    '<span class="pc-chk-cell">' +
+      (batchMode ? '<input type="checkbox" class="pc-chk" data-tag="' + esc(p.tag) + '">' : '') +
+    '</span>' +
+    '<span class="pc-tag" title="' + esc(p.tag) + '">' + esc(p.tag) + '</span>' +
+    '<span class="pc-desc" title="' + esc(p.desc || '') + '">' +
+      (p.desc ? esc(p.desc) : '—') + '</span>' +
+    '<span class="pc-val-cell"><span class="pc-val" data-val="' + esc(p.tag) + '">-</span></span>' +
+    '<span class="pc-unit">' + esc(p.unit || '') + '</span>' +
+    '<span class="pc-range" data-range="' + esc(p.tag) + '" title="四级限值">' +
+      rangeText(p) + '</span>' +
+    '<span class="pc-lv ok" data-lv="' + esc(p.tag) + '">-</span>' +
+    '<span class="pc-time" data-time="' + esc(p.tag) + '">-</span>' +
   '</div>';
+}
+
+// 按当前搜索关键字过滤某装置下的行
+function applyDeviceFilter(dev){
+  const body = document.querySelector('.live-dev-body[data-body="' + cssEsc(dev) + '"]');
+  if (!body) return;
+  const kw = (liveSearch[dev] || '').trim().toLowerCase();
+  let shown = 0;
+  body.querySelectorAll('.pcard[data-tag]').forEach(row => {
+    const tag = row.getAttribute('data-tag');
+    const p = livePointMap[tag] || livePointsCache.find(x => x.tag === tag);
+    const desc = (p && p.desc) ? String(p.desc) : '';
+    const hit = !kw ||
+      tag.toLowerCase().indexOf(kw) >= 0 ||
+      desc.toLowerCase().indexOf(kw) >= 0;
+    row.style.display = hit ? '' : 'none';
+    if (hit) shown++;
+  });
+  const empty = body.querySelector('.prow-empty');
+  if (empty) empty.style.display = (kw && !shown) ? '' : 'none';
+}
+
+function bindSearchInputs(){
+  const box = document.getElementById('liveGroups');
+  box.querySelectorAll('[data-dev-search]').forEach(inp => {
+    inp.addEventListener('click', e => e.stopPropagation());
+    inp.addEventListener('mousedown', e => e.stopPropagation());
+    inp.addEventListener('input', () => {
+      const dev = inp.getAttribute('data-dev-search');
+      liveSearch[dev] = inp.value;
+      const clr = box.querySelector('[data-dev-clear="' + cssEsc(dev) + '"]');
+      if (clr) clr.style.display = inp.value ? '' : 'none';
+      applyDeviceFilter(dev);
+    });
+  });
+  box.querySelectorAll('[data-dev-clear]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const dev = btn.getAttribute('data-dev-clear');
+      liveSearch[dev] = '';
+      const inp = box.querySelector('[data-dev-search="' + cssEsc(dev) + '"]');
+      if (inp) inp.value = '';
+      btn.style.display = 'none';
+      applyDeviceFilter(dev);
+    });
+  });
 }
 
 function bindCardEvents(){
@@ -371,6 +478,7 @@ function bindCardEvents(){
   box.querySelectorAll('.live-dev-hd').forEach(hd => {
     hd.addEventListener('click', (e) => {
       if (e.target.closest('.dev-pause-btn')) return;
+      if (e.target.closest('.dev-search') || e.target.closest('.dev-search-clear')) return;
       const name = hd.getAttribute('data-toggle');
       liveCollapse[name] = !liveCollapse[name];
       const group = hd.parentNode;
@@ -413,7 +521,7 @@ function bindCardEvents(){
     });
   });
 
-  box.querySelectorAll('.pcard').forEach(card => {
+  box.querySelectorAll('.pcard[data-tag]').forEach(card => {
     const chk = card.querySelector('.pc-chk');
     if (chk){
       chk.checked = !!batchSel[card.getAttribute('data-tag')];
@@ -435,7 +543,7 @@ function bindCardEvents(){
     card.addEventListener('dragend', () => {
       setTimeout(() => { window.__cardDragging = false; }, 150);
       card.classList.remove('dragging');
-      box.querySelectorAll('.pcard').forEach(c => {
+      box.querySelectorAll('.pcard[data-tag]').forEach(c => {
         c.classList.remove('drop-before','drop-after');
       });
       box.querySelectorAll('.live-dev-body').forEach(b => {
@@ -449,8 +557,8 @@ function bindCardEvents(){
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       const r = card.getBoundingClientRect();
-      const before = (e.clientX - r.left) < r.width / 2;
-      box.querySelectorAll('.pcard').forEach(c => c.classList.remove('drop-before','drop-after'));
+      const before = (e.clientY - r.top) < r.height / 2;
+      box.querySelectorAll('.pcard[data-tag]').forEach(c => c.classList.remove('drop-before','drop-after'));
       card.classList.add(before ? 'drop-before' : 'drop-after');
     });
     card.addEventListener('dragleave', () => {
@@ -463,7 +571,7 @@ function bindCardEvents(){
       const targetTag = card.getAttribute('data-tag');
       if (targetTag === dragCtx.tag) return;
       const r = card.getBoundingClientRect();
-      const before = (e.clientX - r.left) < r.width / 2;
+      const before = (e.clientY - r.top) < r.height / 2;
       const srcTag = dragCtx.tag;
       dragCtx = null;
       await reorderCard(srcTag, targetTag, before);
@@ -542,47 +650,105 @@ function levelOf(p, v, t){
 async function refreshLiveValues(){
   const snap = await window.api.snapshot();
   liveSnapshot = snap || {};
-  for (const p of livePointsCache) updateCard(p);
+  const hasIdx = Object.keys(liveCardMap).length > 0;
+  for (const p of livePointsCache){
+    // 索引失效（如页面被重建）时回退到旧的 querySelector 逻辑，保证兼容
+    if (!hasIdx) updateCard(p);
+    else updateCardFast(p, liveCardMap[p.tag]);
+  }
   updateGroupAlarms();
 }
 
-function updateCard(p){
+// 走索引缓存的刷新：跳过隐藏行（被装置搜索过滤掉的），只改变化的文本/类名
+function updateCardFast(p, card){
+  if (!card) return updateCard(p);
+  if (card.style.display === 'none') return;
   const s = liveSnapshot[p.tag];
-  const card = document.querySelector('.pcard[data-tag="' + cssEsc(p.tag) + '"]');
-  if (!card) return;
-  if (!s){ card.className = 'pcard'; return; }
-
-  const valEl = card.querySelector('[data-val]');
-  const lvEl  = card.querySelector('[data-lv]');
-  const tEl   = card.querySelector('[data-time]');
+  if (!s){
+    if (card.className !== 'pcard'){ card.className = 'pcard'; card.__cls = 'pcard'; }
+    return;
+  }
 
   const v = s.value;
   const dev = liveDeviceMap[p.tag];
   const paused = isDevicePaused(dev, Date.now());
   const lvl = paused ? null : levelOf(p, v, s.thresholds);
 
-  if (valEl) valEl.textContent = fmtVal(v);
-
   let cls = 'pcard';
   if (paused) cls += ' muted';
   if (lvl) cls += ' lv-' + lvl;
   else if (v != null && !paused) cls += ' lv-ok';
   if (s.inAlarm && !paused) cls += ' alarming';
-  card.className = cls;
+  if (card.__cls !== cls){ card.className = cls; card.__cls = cls; }
 
+  const valEl = card.__elVal;
+  if (valEl && card.__val !== v){ valEl.textContent = fmtVal(v); card.__val = v; }
+
+  const lvEl = card.__elLv;
   if (lvEl){
-    if (paused){
-      lvEl.className = 'pc-lv paused';
-      lvEl.textContent = '已暂停';
-    } else if (lvl){
-      lvEl.className = 'pc-lv ' + lvl;
-      lvEl.textContent = lvl;
-    } else {
-      lvEl.className = 'pc-lv ok';
-      lvEl.textContent = (v == null) ? '等待' : '正常';
+    let lvCls, lvTxt;
+    if (paused){ lvCls = 'pc-lv paused'; lvTxt = '已暂停'; }
+    else if (lvl){ lvCls = 'pc-lv ' + lvl; lvTxt = lvl; }
+    else { lvCls = 'pc-lv ok'; lvTxt = (v == null) ? '等待' : '正常'; }
+    if (card.__lvCls !== lvCls || card.__lvTxt !== lvTxt){
+      lvEl.className = lvCls;
+      lvEl.textContent = lvTxt;
+      card.__lvCls = lvCls;
+      card.__lvTxt = lvTxt;
     }
   }
-  if (tEl) tEl.textContent = fmtTime(s.lastUpdate);
+
+  const tEl = card.__elT;
+  if (tEl && card.__t !== s.lastUpdate){
+    tEl.textContent = fmtTime(s.lastUpdate);
+    card.__t = s.lastUpdate;
+  }
+}
+
+function updateCard(p){
+  const s = liveSnapshot[p.tag];
+  const card = document.querySelector('.pcard[data-tag="' + cssEsc(p.tag) + '"]');
+  if (!card) return;
+  if (!s){
+    if (card.className !== 'pcard'){ card.className = 'pcard'; card.__cls = 'pcard'; }
+    return;
+  }
+
+  const v = s.value;
+  const dev = liveDeviceMap[p.tag];
+  const paused = isDevicePaused(dev, Date.now());
+  const lvl = paused ? null : levelOf(p, v, s.thresholds);
+
+  // 只写入真正变化的节点，避免每秒把整页 DOM 重写一遍（CPU / 重排优化）
+  let cls = 'pcard';
+  if (paused) cls += ' muted';
+  if (lvl) cls += ' lv-' + lvl;
+  else if (v != null && !paused) cls += ' lv-ok';
+  if (s.inAlarm && !paused) cls += ' alarming';
+  if (card.__cls !== cls){ card.className = cls; card.__cls = cls; }
+
+  const valEl = card.querySelector('[data-val]');
+  if (valEl && card.__val !== v){ valEl.textContent = fmtVal(v); card.__val = v; }
+
+  const lvEl = card.querySelector('[data-lv]');
+  if (lvEl){
+    let lvCls, lvTxt;
+    if (paused){ lvCls = 'pc-lv paused'; lvTxt = '已暂停'; }
+    else if (lvl){ lvCls = 'pc-lv ' + lvl; lvTxt = lvl; }
+    else { lvCls = 'pc-lv ok'; lvTxt = (v == null) ? '等待' : '正常'; }
+    if (card.__lvCls !== lvCls || card.__lvTxt !== lvTxt){
+      lvEl.className = lvCls;
+      lvEl.textContent = lvTxt;
+      card.__lvCls = lvCls;
+      card.__lvTxt = lvTxt;
+    }
+  }
+
+  const tEl = card.querySelector('[data-time]');
+  if (tEl && card.__t !== s.lastUpdate){
+    tEl.textContent = fmtTime(s.lastUpdate);
+    card.__t = s.lastUpdate;
+  }
 }
 
 function updateGroupAlarms(){
@@ -593,10 +759,18 @@ function updateGroupAlarms(){
     g.classList.toggle('paused', paused);
     let alarmCnt = 0;
     if (!paused){
-      for (const p of livePointsCache){
-        if (liveDeviceMap[p.tag] !== dev) continue;
-        const s = liveSnapshot[p.tag];
-        if (s && s.inAlarm) alarmCnt++;
+      const list = liveDevPoints[dev];
+      if (list){
+        for (const p of list){
+          const s = liveSnapshot[p.tag];
+          if (s && s.inAlarm) alarmCnt++;
+        }
+      } else {
+        for (const p of livePointsCache){
+          if (liveDeviceMap[p.tag] !== dev) continue;
+          const s = liveSnapshot[p.tag];
+          if (s && s.inAlarm) alarmCnt++;
+        }
       }
     }
     const hd = g.querySelector('.live-dev-hd');
@@ -634,6 +808,7 @@ setInterval(async () => {
   if (!page.classList.contains('active')) return;
   if (isEditing()) return;
   if (!livePointsCache.length) return;
+  if (document.hidden) return;   // 窗口最小化 / 切到后台时不做无谓刷新（CPU 优化）
   const now = Date.now();
   let changed = false;
   for (const dev in liveDevicePause){
@@ -641,10 +816,7 @@ setInterval(async () => {
     if (until > 0 && now >= until){ changed = true; break; }
   }
   if (changed){ await renderLive(); return; }
-  const snap = await window.api.snapshot();
-  liveSnapshot = snap || {};
-  for (const p of livePointsCache) updateCard(p);
-  updateGroupAlarms();
+  await refreshLiveValues();
   updatePauseTimers();
 }, 1000);
 
@@ -675,13 +847,13 @@ async function openAddPointDialog(){
     document.getElementById(id).value = '';
   });
   document.getElementById('ptDur').value = '0';
-  document.getElementById('ptCd').value = '10';
   document.getElementById('ptEnabled').checked = true;
   document.getElementById('ptDev').textContent = '按「装置分类」关键字自动判定';
   document.getElementById('ptDelete').style.display = 'none';
   document.getElementById('ptPause').style.display = 'none';
   document.getElementById('pointModalTag').innerHTML =
-    '位号需与平台一致（区分大小写）。报警按 HH / H / L / LL 四级判断，留空表示该级不限。';
+    '位号需与平台一致（区分大小写）。报警按 HH / H / L / LL 四级判断，留空表示该级不限。' +
+    '<br>越限后<b>只弹窗一次</b>；可在报警窗点「确认」，确认后不再重复提醒，数值回到正常区自动解除。';
   document.getElementById('pointModal').style.display = 'flex';
   setTimeout(() => tagEl.focus(), 30);
 }
@@ -702,15 +874,16 @@ async function openPointDialog(tag){
   document.getElementById('ptL').value  = p.l  == null ? '' : p.l;
   document.getElementById('ptLL').value = p.ll == null ? '' : p.ll;
   document.getElementById('ptDur').value = p.duration == null ? 0 : p.duration;
-  document.getElementById('ptCd').value = p.cooldown == null ? 10 : p.cooldown;
   document.getElementById('ptEnabled').checked = p.enabled !== false;
   const dev = getDeviceOf(p.tag, cfg.devices);
   document.getElementById('ptDev').textContent = dev || '未分类';
   document.getElementById('ptDelete').style.display = '';
   document.getElementById('ptPause').style.display =
     (dev && dev !== '未分类') ? '' : 'none';
-  document.getElementById('pointModalTag').innerHTML =
-    '冷却填 0 表示条件持续成立时只提醒一次；需要人工确认的规则请在「高级规则」页设置保持模式。';
+  // 标题栏直接显示位号与所属装置（位号输入框为只读，避免误改主键）
+  document.getElementById('pointModalTag').textContent = p.tag;
+  document.getElementById('pointModalDev').textContent = dev || '未分类';
+  document.getElementById('pointModalTag').title = p.tag;
   document.getElementById('pointModal').style.display = 'flex';
   setTimeout(() => document.getElementById('ptDesc').focus(), 30);
 }
@@ -720,7 +893,6 @@ function closePointDialog(){
 }
 
 function readPointForm(){
-  const cd = numOrNull(document.getElementById('ptCd').value);
   return {
     desc: document.getElementById('ptDesc').value.trim(),
     unit: document.getElementById('ptUnit').value.trim(),
@@ -729,7 +901,7 @@ function readPointForm(){
     l:  numOrNull(document.getElementById('ptL').value),
     ll: numOrNull(document.getElementById('ptLL').value),
     duration: numOrNull(document.getElementById('ptDur').value) || 0,
-    cooldown: (cd == null || cd < 0) ? 10 : cd,
+    cooldown: 0,   // 冷却机制已由「越限只提醒一次 + 人工确认」取代，保留字段以兼容旧配置
     enabled: document.getElementById('ptEnabled').checked
   };
 }
@@ -1044,6 +1216,7 @@ async function saveVars(){
 setInterval(async () => {
   const page = document.getElementById('page-vars');
   if (!page || !page.classList.contains('active')) return;
+  if (document.hidden) return;
   await refreshVarRuntime();
   const tb = document.getElementById('varBody');
   if (!tb) return;
@@ -1329,9 +1502,26 @@ bind('btnVarSave', saveVars);
 
 // 点位编辑弹框
 bind('ptCancel', closePointDialog);
+bind('ptClose', closePointDialog);
 bind('ptSave', savePointDialog);
 bind('ptDelete', deletePointDialog);
 bind('ptPause', pausePointDeviceDialog);
+// Esc 关闭；点击遮罩关闭（鼠标按下与抬起都在遮罩上才算）
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const m = document.getElementById('pointModal');
+  if (m && m.style.display !== 'none') closePointDialog();
+});
+(function bindPointOverlayClose(){
+  const ov = document.getElementById('pointModal');
+  if (!ov) return;
+  let onSelf = false;
+  ov.addEventListener('mousedown', e => { onSelf = (e.target === ov); });
+  ov.addEventListener('mouseup', e => {
+    if (onSelf && e.target === ov) closePointDialog();
+    onSelf = false;
+  });
+})();
 document.getElementById('devCancel').addEventListener('click', () => {
   document.getElementById('devModal').style.display = 'none';
 });
@@ -1361,10 +1551,26 @@ setInterval(() => {
 // ============================================================
 // 启动
 // ============================================================
+// 版本号统一取打包后的真实版本（package.json → app.getVersion()），
+// 避免升级到 1.0.1 后界面仍显示 1.0.0
+function loadAppVersion(){
+  const el = document.getElementById('appVer');
+  if (!window.api.getVersion){
+    if (el) el.textContent = '—';
+    return;
+  }
+  window.api.getVersion().then(v => {
+    if (!v) return;
+    APP_VER = String(v);
+    if (el) el.textContent = APP_VER;
+    updateStatusBar();
+  }).catch(() => { if (el) el.textContent = '—'; });
+}
+
 loadConfigToUI();
 renderLive();
 canvasInitBindings();
-document.getElementById('appVer').textContent = '1.0.0';
+loadAppVersion();
 
 // 启动即主动同步一次连接状态：避免主进程早期推送的 conn:state 被错过
 // （WS 已连接却显示橙色「初始化中」的根因）

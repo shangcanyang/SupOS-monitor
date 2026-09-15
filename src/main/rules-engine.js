@@ -107,7 +107,7 @@ class RulesEngine {
         value: null, status: null, ts: null, lastUpdate: 0,
         inAlarm: false, level: null,
         pendingLevel: null, pendingSince: 0,
-        cooldownUntil: 0,
+        cooldownUntil: 0, acked: false,
         override: null, normalSince: 0,
         abnormal: false
       };
@@ -242,6 +242,7 @@ class RulesEngine {
           rt.cooldownUntil = 0;
           rt.inAlarm = false;
           rt.level = null;
+          rt.acked = false;              // 数值回落：解除人工确认静默，下次越限重新提醒
           rt.normalSince = 0;
         }
         if (rt.override){
@@ -263,18 +264,36 @@ class RulesEngine {
 
       const cdMin = normCooldown(p.cooldown, 10);
       if (!rt.cooldownUntil){
-        rt.inAlarm = true; rt.level = lvl;
-        // 冷却 0：只提醒一次，条件持续成立也不再重复
-        rt.cooldownUntil = cdMin > 0 ? now + cdMin * 60000 : -1;
-        this.fire(p, rt, lvl, '首次');
+        if (rt.acked){
+          // 已人工确认且数值仍越限：保持静默，不再重复提醒
+          rt.cooldownUntil = -1;
+        } else {
+          rt.inAlarm = true; rt.level = lvl;
+          // 冷却 0：只提醒一次，条件持续成立也不再重复
+          rt.cooldownUntil = cdMin > 0 ? now + cdMin * 60000 : -1;
+          this.fire(p, rt, lvl, '首次');
+        }
       } else if (rt.cooldownUntil > 0 && now >= rt.cooldownUntil){
-        rt.inAlarm = true; rt.level = lvl;
-        rt.cooldownUntil = now + cdMin * 60000;
-        this.fire(p, rt, lvl, '冷却到期');
+        if (rt.acked){
+          // 已人工确认：冷却到期也不再重复提醒，待数值回落正常后自动重新布防
+          rt.cooldownUntil = -1;
+        } else {
+          rt.inAlarm = true; rt.level = lvl;
+          rt.cooldownUntil = now + cdMin * 60000;
+          this.fire(p, rt, lvl, '冷却到期');
+        }
       }
     }
 
     this.tickCanvasRules(now);
+  }
+
+  // 画布规则的 tick 序号：以进程启动毫秒为基准严格递增，
+  // 保证大于上一次运行落盘的状态值，避免跨重启撞号导致首个 tick 被跳过
+  nextTickId(){
+    if (!this._tickBase) this._tickBase = Date.now();
+    this._tickSeq = (this._tickSeq || 0) + 1;
+    return this._tickBase + this._tickSeq;
   }
 
   tickCanvasRules(now){
@@ -300,14 +319,29 @@ class RulesEngine {
       return;
     }
 
-    const runtime = {};
+    // 运行时值视图：复用同一个对象，只在每 tick 更新字段，
+    // 避免每秒为全部位号重新分配对象（CPU / GC 优化）
+    if (!this._runtimeView) this._runtimeView = {};
+    const runtime = this._runtimeView;
+    const alive = {};
     for (const tag in this.rt){
-      runtime[tag] = { value: this.rt[tag].value, status: this.rt[tag].status };
+      alive[tag] = true;
+      const r = this.rt[tag];
+      let v = runtime[tag];
+      if (!v){ v = runtime[tag] = { value: null, status: null }; }
+      v.value = r.value;
+      v.status = r.status;
+    }
+    for (const tag in runtime){
+      if (!alive[tag]) delete runtime[tag];
     }
     const state = {
       runtime,
       vars: this.canvasVars,
       nodeState: this.canvasNodeState,
+      // 严格递增的 tick 序号（含进程启动时间基准，保证大于上次运行落盘的值），
+      // 供 canvas-engine 的 tick 幂等判断使用，避免同一毫秒内的两次 tick 丢事件
+      tickId: this.nextTickId(),
       now
     };
 
@@ -347,7 +381,10 @@ class RulesEngine {
 
       if (res.active){
         if (!cr.since) cr.since = now;
-        if (now - cr.since < durMs) continue;                                 // 持续时间未满，先不提醒
+        // 条件需持续「保持秒数」后才通知（0 = 立即通知）
+        // 注：旧代码这里误写成未声明的 durMs，画布规则一触发就抛 ReferenceError，
+        // 弹出「Uncaught Exception: durMs is not defined」，报警完全不可用。
+        if (now - cr.since < holdMs) continue;
 
         // 已人工确认：条件仍成立时保持静默，不重复推送/弹窗，等条件恢复后重新计数
         if (cr.acked){
@@ -425,6 +462,22 @@ class RulesEngine {
 
     logger.log('自定义通知人工确认：' + note.name);
     return { ok: true };
+  }
+
+  // 人工确认（测点高低限报警）：本次报警静默，不再重复弹窗；
+  // 数值恢复正常后 acked 自动清零，下次越限重新提醒。
+  ackPoint(tag){
+    const rt = this.rt[tag];
+    if (!rt) return { ok: false, error: '位号未在运行' };
+    rt.inAlarm = false;
+    rt.acked = true;
+    logger.log('测点报警人工确认：' + tag);
+    return { ok: true };
+  }
+
+  // 变量定义被增删改后调用：下一次 tick 立即重新读盘
+  markVarsDirty(){
+    this._varsDirty = true;
   }
 
   // 等待确认的报警：给通知服务用于「保持弹窗/续期」与「确认后收尾」

@@ -44,7 +44,7 @@
         <span id="liveCount" style="color:#94a3b8;font-size:12px;margin-left:8px;"></span>
       </div>
       <div style="color:#94a3b8;font-size:11px;margin-bottom:8px;">
-        提示：点击卡片可直接修改描述与上下限报警值；拖动卡片可在同装置内排序，顺序自动保存
+        提示：详细列表模式下点击任意一行可修改描述与上下限报警值；每个装置标题栏右侧的搜索框可按位号 / 描述筛选；拖动行可在同装置内排序，顺序自动保存
       </div>
       <div id="liveGroups"></div>
     </div>
@@ -311,33 +311,57 @@
 
 <!-- 点位编辑弹框 -->
 <div id="pointModal" class="modal-ov" style="display:none;">
-  <div class="modal-box" style="width:560px;">
-    <h3 id="pointModalTitle">编辑位号</h3>
-    <div class="mhint" id="pointModalTag"></div>
-    <div class="adj-grid">
-      <div class="adj-row"><label>位号</label><input type="text" id="ptTag" placeholder="如 HCY_TI_710A44_PV"></div>
-      <div class="adj-row"><label>描述</label><input type="text" id="ptDesc"></div>
-      <div class="adj-row"><label>单位</label><input type="text" id="ptUnit" placeholder="如 ℃ / MPa"></div>
-      <div class="adj-row"><label>HH</label><input type="text" id="ptHH" placeholder="空 = 不限"></div>
-      <div class="adj-row"><label>H</label><input type="text" id="ptH" placeholder="空 = 不限"></div>
-      <div class="adj-row"><label>L</label><input type="text" id="ptL" placeholder="空 = 不限"></div>
-      <div class="adj-row"><label>LL</label><input type="text" id="ptLL" placeholder="空 = 不限"></div>
-      <div class="adj-row"><label>持续(s)</label><input type="text" id="ptDur" placeholder="0"></div>
-      <div class="adj-row"><label>冷却(min)</label><input type="text" id="ptCd" placeholder="0 = 只提醒一次"></div>
-      <div class="adj-row"><label>启用</label>
-        <input type="checkbox" id="ptEnabled" style="flex:0 0 auto;width:auto">
-        <span style="flex:1"></span>
+  <div class="modal-box pt-modal">
+    <div class="pt-hd">
+      <h3 id="pointModalTitle">编辑位号</h3>
+      <button type="button" class="pt-close" id="ptClose" title="关闭">×</button>
+    </div>
+    <div class="pt-tagbar">
+      <span class="pt-tagdot"></span>
+      <span id="pointModalTag" class="pt-tagname"></span>
+      <span id="pointModalDev" class="pt-devchip"></span>
+    </div>
+    <div class="pt-body">
+      <div class="pt-sec">基本信息</div>
+      <div class="adj-grid">
+        <div class="adj-row"><label>位号</label><input type="text" id="ptTag" placeholder="如 HCY_TI_710A44_PV"></div>
+        <div class="adj-row"><label>描述</label><input type="text" id="ptDesc" placeholder="如 装车泵出口压力"></div>
+        <div class="adj-row"><label>单位</label><input type="text" id="ptUnit" placeholder="如 ℃ / MPa"></div>
+        <div class="adj-row"><label>所属装置</label>
+          <span id="ptDev" class="pt-ro"></span>
+        </div>
       </div>
-      <div class="adj-row"><label>所属装置</label>
-        <span id="ptDev" style="flex:1;font-size:12px;color:#475569"></span>
+
+      <div class="pt-sec">报警限值<span class="pt-sec-tip">留空表示该级不限</span></div>
+      <div class="adj-grid cols4">
+        <div class="adj-row"><label>HH</label><input type="text" id="ptHH" placeholder="高高限"></div>
+        <div class="adj-row"><label>H</label><input type="text" id="ptH" placeholder="高限"></div>
+        <div class="adj-row"><label>L</label><input type="text" id="ptL" placeholder="低限"></div>
+        <div class="adj-row"><label>LL</label><input type="text" id="ptLL" placeholder="低低限"></div>
+      </div>
+
+      <div class="pt-sec">报警行为</div>
+      <div class="adj-grid">
+        <div class="adj-row"><label>持续(s)</label><input type="text" id="ptDur" placeholder="0 = 立即报警"></div>
+        <div class="adj-row"><label>启用</label>
+          <label class="pt-switch">
+            <input type="checkbox" id="ptEnabled">
+            <span class="pt-slider"></span>
+          </label>
+          <span class="pt-switch-tip">启用该位号的越限报警</span>
+        </div>
+      </div>
+      <div class="pt-note">
+        越限只弹窗一次：在报警窗点「确认」后不再重复提醒，数值回落到正常区后自动重新布防。<br>
+        需要人工确认才复位的高级规则，请在「高级规则」页把该规则的保持方式设为 latch；「持续」表示数值需连续越限多少秒才报警，0 = 立即报警。
       </div>
     </div>
-    <div class="modal-foot" style="justify-content:space-between">
-      <span>
-        <button id="ptPause" style="background:#f59e0b;border-color:#f59e0b;color:#fff">暂停该装置报警</button>
-        <button id="ptDelete" style="background:#dc2626;border-color:#dc2626;color:#fff">删除位号</button>
+    <div class="modal-foot pt-foot" style="justify-content:space-between">
+      <span class="pt-foot-left">
+        <button id="ptPause" class="warn">暂停该装置报警</button>
+        <button id="ptDelete" class="danger">删除位号</button>
       </span>
-      <span>
+      <span class="pt-foot-right">
         <button id="ptCancel">取消</button>
         <button id="ptSave" class="primary">保存</button>
       </span>

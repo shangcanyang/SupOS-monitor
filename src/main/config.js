@@ -35,7 +35,26 @@ const DEF = {
   devicePause: {}
 };
 
-function load(){
+// ---- 进程内缓存 ----
+// 规则引擎每秒 tick 会对每个位号调用一次 getDeviceOf()，每次都 load() 一遍配置；
+// 渲染端也会频繁拉配置。原实现每次同步读盘 + safeStorage 解密 + JSON.parse，
+// 是主进程 CPU 占用的最大来源。这里加 2 秒 TTL 缓存，save() 后立即失效保证写后读一致。
+let _cache = null;
+let _cacheAt = 0;
+const CACHE_MS = 2000;
+
+function load(force){
+  const nowMs = Date.now();
+  if (!force && _cache && (nowMs - _cacheAt) < CACHE_MS){
+    return JSON.parse(JSON.stringify(_cache));
+  }
+  const obj = readCfg();
+  _cache = obj;
+  _cacheAt = nowMs;
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function readCfg(){
   if (!fs.existsSync(CFG_FILE)) return JSON.parse(JSON.stringify(DEF));
   try {
     const raw = JSON.parse(fs.readFileSync(CFG_FILE, 'utf8'));
@@ -84,10 +103,12 @@ function save(cfg){
     devices: Array.isArray(cfg.devices) ? cfg.devices : [],
     canvasRules: Array.isArray(cfg.canvasRules) ? cfg.canvasRules : [],
     devicePause: (cfg.devicePause && typeof cfg.devicePause === 'object') ? cfg.devicePause : {},
-    _ver: '1.0.0',
+    _ver: (() => { try { return app.getVersion(); } catch (e) { return '0.0.0'; } })(),
     _ts: new Date().toISOString()
   };
   fs.writeFileSync(CFG_FILE, JSON.stringify(out, null, 2), 'utf8');
+  _cache = null;
+  _cacheAt = 0;
   return true;
 }
 

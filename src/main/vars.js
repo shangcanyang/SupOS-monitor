@@ -4,16 +4,38 @@ const path = require('path');
 
 const FILE = path.join(app.getPath('userData'), 'vars.json');
 
-function load(){
-  if (!fs.existsSync(FILE)) return { vars: [] };
+// ---- 读盘缓存 ----
+// 规则引擎每秒 tick 都会取一次变量定义；原实现每次同步读盘 + JSON.parse，
+// 属主进程常态 CPU/IO 开销。这里按文件 mtime 做进程内缓存，写盘后立即更新。
+let _cache = null;
+let _mtime = 0;
+
+function clone(d){
+  return { vars: (d.vars || []).map(v => Object.assign({}, v)) };
+}
+
+function readFile(){
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, 'utf8'));
     return { vars: raw.vars || [] };
   } catch (e) { return { vars: [] }; }
 }
 
+function load(){
+  let st = null;
+  try { st = fs.statSync(FILE); }
+  catch (e) { _cache = null; _mtime = 0; return { vars: [] }; }
+  if (_cache && st.mtimeMs === _mtime) return clone(_cache);
+  const out = readFile();
+  _cache = out;
+  _mtime = st.mtimeMs;
+  return clone(out);
+}
+
 function save(data){
   fs.writeFileSync(FILE, JSON.stringify(data, null, 2), 'utf8');
+  _cache = { vars: (data && data.vars) || [] };
+  try { _mtime = fs.statSync(FILE).mtimeMs; } catch (e) { _mtime = 0; }
   return true;
 }
 

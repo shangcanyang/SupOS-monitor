@@ -153,10 +153,11 @@ ipcMain.handle('conn:get', () => lastConn);
 ipcMain.handle('tags:saveLiveOrder', (_e, order) => tags.saveLiveOrder(order));
 
 // ---- 环境变量 ----
+ipcMain.handle('app:version', () => app.getVersion());   // 渲染端版本号统一从这里取
 ipcMain.handle('vars:load',   ()       => vars.load());
-ipcMain.handle('vars:saveAll',(_e,list)=> vars.saveAll(list));
-ipcMain.handle('vars:add',    (_e,o)   => vars.addOne(o));
-ipcMain.handle('vars:remove', (_e,id)  => vars.removeOne(id));
+ipcMain.handle('vars:saveAll',(_e,list)=> { const r = vars.saveAll(list); if (engine) engine.markVarsDirty(); return r; });
+ipcMain.handle('vars:add',    (_e,o)   => { const r = vars.addOne(o);    if (engine) engine.markVarsDirty(); return r; });
+ipcMain.handle('vars:remove', (_e,id)  => { const r = vars.removeOne(id); if (engine) engine.markVarsDirty(); return r; });
 ipcMain.handle('vars:runtime',()       => ({ ok: true, vars: engine ? engine.canvasVars : {} }));
 
 ipcMain.handle('tags:importExcel', async () => {
@@ -427,6 +428,7 @@ ipcMain.handle('config:export', () => configIO.exportConfig());
 ipcMain.handle('config:import', async () => {
   const r = await configIO.importConfig();
   if (r.ok) sendToMain('config:reloaded', {});
+  if (r.ok && engine) engine.markVarsDirty();
   return r;
 });
 
@@ -447,6 +449,12 @@ ipcMain.handle('alert:ack', (_e, ruleId) => {
   alertWindow.update(engine.collectActive());
   return r;
 });
+// 测点高低限报警的人工确认：确认后不再重复弹窗，数值回落重新计数
+ipcMain.handle('alert:ackPoint', (_e, tag) => {
+  const r = engine.ackPoint(tag);
+  alertWindow.update(engine.collectActive());
+  return r;
+});
 ipcMain.handle('alert:detail', () => engine.collectActive());
 
 const startHidden = process.argv.includes('--hidden');
@@ -457,7 +465,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
-  logger.log('======== SupOS-monitor v1.0.0 启动 ========');
+  logger.log('======== SupOS-monitor v' + app.getVersion() + ' 启动 ========');
   logger.log('配置目录：' + config.getDir());
 
   engine = new RulesEngine({

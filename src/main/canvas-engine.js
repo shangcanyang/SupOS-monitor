@@ -74,8 +74,11 @@ function nst(ctx, id, init){
 
 // 时间戳状态（tick 幂等）
 function tickState(st, ctx){
-  if (st.tick === ctx.now) return false; // 本 tick 已更新过
-  st.tick = ctx.now;
+  // 每 tick 只推进一次；优先用调用方给出的 tickId（严格递增），
+  // 没有时退回时间戳。若用时间戳，两次 tick 落在同一毫秒会被误判为「本 tick 已更新」而漏掉事件。
+  const id = (ctx && ctx.tickId !== undefined && ctx.tickId !== null) ? ctx.tickId : ctx.now;
+  if (st.tick === id) return false; // 本 tick 已更新过
+  st.tick = id;
   return true;
 }
 
@@ -196,6 +199,8 @@ function evalRule(rule, state){
 
   const ctx = {
     now: Number(state && state.now) || Date.now(),
+    // 调用方若给出 tick 序号则透传（tick 幂等判断优先用它，见 tickState）
+    tickId: (state && state.tickId !== undefined) ? state.tickId : undefined,
     runtime: (state && state.runtime) || {},
     vars: (state && state.vars) || {},
     nodeState: (state && state.nodeState) || {},

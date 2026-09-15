@@ -132,11 +132,16 @@ function render(items){
           '<b>H</b>='  + fmtTh(t.h)  + '　' +
           '<b>L</b>='  + fmtTh(t.l)  + '　' +
           '<b>LL</b>=' + fmtTh(t.ll) +
+          (it.acked ? '　<b style="color:#16a34a">已确认，不再重复提醒</b>'
+                    : '　<b style="color:#dc2626">只提醒一次</b>') +
         '</div>';
     var actsHtml = '<div class="acts">' +
       (it.isCanvasRule
         ? '<button data-ack="' + i + '" class="primary">✓ 确认复位</button>'
-        : '<button data-adj="' + i + '">⚙ 临时调整设定值</button>') +
+        : (it.acked
+            ? '<button disabled>✓ 已确认</button>'
+            : '<button data-ackpt="' + i + '" class="primary">✓ 确认</button>') +
+          '<button data-adj="' + i + '">⚙ 临时调整设定值</button>') +
       '</div>';
     return '<div class="item ' + esc(it.level) + '">' +
       '<div class="hd">' +
@@ -161,6 +166,20 @@ function render(items){
     btns[k].addEventListener('click', (function(idx){
       return function(){ openAdjust(idx); };
     })(Number(btns[k].getAttribute('data-adj'))));
+  }
+
+  // 测点高低限报警：人工确认（确认后不再重复弹窗）
+  var ackPts = box.querySelectorAll('[data-ackpt]');
+  for (var q = 0; q < ackPts.length; q++){
+    ackPts[q].addEventListener('click', (function(idx){
+      return function(){
+        var it = currentItems[idx];
+        if (!it || !ipcRenderer) return;
+        ipcRenderer.invoke('alert:ackPoint', it.tag).then(function(){
+          ipcRenderer.invoke('alert:detail').then(render);
+        });
+      };
+    })(Number(ackPts[q].getAttribute('data-ackpt'))));
   }
 
   var acks = box.querySelectorAll('[data-ack]');
